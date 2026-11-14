@@ -55,7 +55,7 @@ HTML design. ab_glyph and tiny-skia retain their existing dependency notices.
 
 ## FFTA Clan Desk fork
 
-Independently maintained by [Johnnie Barton](https://github.com/johnnieb333/FFTA-Clan-Desk).
+Independently maintained by [johnnieb333](https://github.com/johnnieb333/FFTA-Clan-Desk).
 Forked from [Jorge262007/FFTARecomp](https://github.com/Jorge262007/FFTARecomp), based on [JRickey/gba-recomp](https://github.com/JRickey/gba-recomp).
 
 This fork adds the Clan Desk interface, clan editor tools, manual-state recovery and timed-autosave browser. Development and testing were assisted by AI. Original author notices and third-party licences above remain in force. Runtime character artwork comes from the player's own ROM; it is not bundled as an extracted asset pack.

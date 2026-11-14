@@ -2,7 +2,7 @@
 
 A Windows beta of **FFTARecomp** with an integrated clan editor, a new Clan Desk menu, manual save states and a browsable timed-autosave history.
 
-**Independently maintained by [Johnnie Barton](https://github.com/johnnieb333).**
+**Independently maintained by [johnnieb333](https://github.com/johnnieb333).**
 Forked from [Jorge262007/FFTARecomp](https://github.com/Jorge262007/FFTARecomp), built on [JRickey/gba-recomp](https://github.com/JRickey/gba-recomp). Original authors, licences and third-party notices are retained.
 
 ## Windows beta scope
@@ -74,7 +74,7 @@ The packaging script includes only listed runtime files, licence notices and the
 
 - **Jorge.R / Jorge262007 and contributors:** upstream FFTARecomp.
 - **JRickey and contributors:** gba-recomp foundation and function metadata.
-- **Johnnie Barton:** FFTA Clan Desk fork and its development/testing, with AI assistance.
+- **johnnieb333:** FFTA Clan Desk fork and its development/testing, with AI assistance.
 - See [Licenses/CREDITS.md](Licenses/CREDITS.md), [Licenses/LICENSE](Licenses/LICENSE), and [Licenses/THIRD_PARTY_NOTICES.md](Licenses/THIRD_PARTY_NOTICES.md) for retained notices and component licences. TinyCC source and replacement instructions are included separately.
 
 Final Fantasy Tactics Advance and related names belong to their respective rightsholders. This fan project is not affiliated with Square Enix or Nintendo. The software licences do not grant rights to the game.
