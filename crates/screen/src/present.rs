@@ -81,6 +81,21 @@ pub fn letterbox_f(window: (u32, u32), vw: f32, vh: f32) -> (f32, f32, f32) {
     (scale, (w - vw * scale) * 0.5, (h - vh * scale) * 0.5)
 }
 
+/// An opaque RGBA notification already rasterized at physical window resolution.
+pub struct RgbaOverlay<'a> {
+    pub pixels: &'a [[u8;4]],
+    pub size: (u32,u32),
+    pub origin: (u32,u32),
+}
+struct OverlayGpu {
+    texture: wgpu::Texture,
+    uniforms: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+    size: (u32,u32),
+    origin: (u32,u32),
+    last_pixels: Vec<[u8;4]>,
+    active: bool,
+}
 pub struct Presenter {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -96,6 +111,7 @@ pub struct Presenter {
     srgb_surface: bool,
     src_size: (u32, u32),
     ui_layer: Vec<Option<crate::ui_layer::Gpu>>,
+    rgba_overlay: Option<OverlayGpu>,
 }
 
 impl Presenter {
@@ -297,6 +313,7 @@ impl Presenter {
             srgb_surface,
             src_size: (src_w, src_h),
             ui_layer: Vec::new(),
+            rgba_overlay: None,
         };
         p.surface.configure(&p.device, &p.config);
         // Color-match the layer to the panel (macOS only); the surface +
@@ -327,6 +344,64 @@ impl Presenter {
     }
     pub fn set_ui_layer(&mut self,frame:Option<&crate::ui_layer::Frame<'_>>) {
         self.set_ui_layers(&[frame.copied()]);
+    }
+
+    /// Upload only when the notification or its physical size changes.
+    /// Its pass runs after all game UI, outside the game's zoom and LCD filter.
+    pub fn set_rgba_overlay(&mut self, frame: Option<RgbaOverlay<'_>>) {
+        let Some(frame) = frame else {
+            if let Some(overlay) = &mut self.rgba_overlay { overlay.active = false; }
+            return;
+        };
+        let (w,h) = frame.size;
+        if w == 0 || h == 0 || frame.pixels.len() != w as usize*h as usize {
+            if let Some(overlay) = &mut self.rgba_overlay { overlay.active = false; }
+            return;
+        }
+        if self.rgba_overlay.as_ref().map(|o| o.size) != Some(frame.size) {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("notification-rgba"),
+                size: wgpu::Extent3d { width:w, height:h, depth_or_array_layers:1 },
+                mip_level_count:1, sample_count:1, dimension:wgpu::TextureDimension::D2,
+                format:wgpu::TextureFormat::Rgba8Unorm,
+                usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,
+                view_formats:&[],
+            });
+            let uniforms = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label:Some("notification-position"),size:80,
+                usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation:false,
+            });
+            let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label:Some("notification-bind"),layout:&self.pipeline.get_bind_group_layout(0),
+                entries:&[
+                    wgpu::BindGroupEntry { binding:0, resource:wgpu::BindingResource::TextureView(
+                        &texture.create_view(&wgpu::TextureViewDescriptor::default())) },
+                    wgpu::BindGroupEntry { binding:1, resource:uniforms.as_entire_binding() },
+                ],
+            });
+            self.rgba_overlay=Some(OverlayGpu { texture,uniforms,bind,size:frame.size,
+                origin:frame.origin,last_pixels:Vec::new(),active:false });
+        }
+        let overlay=self.rgba_overlay.as_mut().unwrap();
+        if overlay.last_pixels.as_slice()!=frame.pixels {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture:&overlay.texture,mip_level:0,
+                    origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All },
+                bytemuck_cast(frame.pixels),
+                wgpu::TexelCopyBufferLayout { offset:0,bytes_per_row:Some(w*4),rows_per_image:Some(h) },
+                wgpu::Extent3d { width:w,height:h,depth_or_array_layers:1 },
+            );
+            overlay.last_pixels=frame.pixels.to_vec();
+        }
+        let params:[f32;20]=[
+            w as f32,h as f32,frame.origin.0 as f32,frame.origin.1 as f32,
+            w as f32,h as f32,0.,1.,1.,0.,0.5,0.5,0.,
+            if self.srgb_surface {1.} else {0.},0.,0.,w as f32,h as f32,1.,0.,
+        ];
+        self.queue.write_buffer(&overlay.uniforms,0,as_bytes(&params));
+        overlay.origin=frame.origin;
+        overlay.active=true;
     }
 
     /// Switch presentation mode live (false = AutoNoVsync, true =
@@ -518,6 +593,17 @@ impl Presenter {
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
             for ui in self.ui_layer.iter().flatten() {ui.draw(&mut pass,(self.config.width,self.config.height));}
+            if let Some(overlay)=self.rgba_overlay.as_ref().filter(|o| o.active) {
+                let x=overlay.origin.0.min(w); let y=overlay.origin.1.min(h);
+                let ow=overlay.size.0.min(w-x); let oh=overlay.size.1.min(h-y);
+                if ow>0 && oh>0 {
+                    pass.set_pipeline(&self.pipeline);
+                    pass.set_viewport(0.,0.,w as f32,h as f32,0.,1.);
+                    pass.set_scissor_rect(x,y,ow,oh);
+                    pass.set_bind_group(0,&overlay.bind,&[]);
+                    pass.draw(0..3,0..1);
+                }
+            }
         }
         self.queue.submit([encoder.finish()]);
         frame.present();

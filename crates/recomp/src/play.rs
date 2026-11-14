@@ -394,6 +394,18 @@ enum MouseEv {
     Wheel(bool),
 }
 
+
+/// Mouse repeats only while it remains over the original stat +/- button.
+struct StatHoldRepeat{target:(usize,bool),next:Instant}
+impl StatHoldRepeat{
+ fn new(target:(usize,bool),now:Instant)->Self{Self{target,next:now+Duration::from_millis(450)}}
+ fn due(&mut self,target:(usize,bool),now:Instant)->bool{
+  if target!=self.target||now<self.next{return false;}
+  // No catch-up bursts after a slow preview or a stalled frame.
+  self.next=now+Duration::from_millis(160);true
+ }
+}
+
 /// Canonical key name (see input-config) to a winit *physical* key. Physical
 /// (scancode-position) keys keep a binding in the same spot regardless of
 /// QWERTY/AZERTY — the gamepad-style "this key here" model the old minifb
@@ -533,7 +545,14 @@ struct PlayApp {
     // Core machine + persistence.
     machine: Machine,
     sav_path: String,
+    reward_settings_path: std::path::PathBuf,
+    shop_settings_path:std::path::PathBuf,
+    law_settings_path:std::path::PathBuf,
     autosave: crate::autosave::AutoSave,
+    manual_states: crate::manual_states::ManualStates,
+    timed_states: crate::timed_states::TimedStates,
+    state_notice: Option<(Instant, String)>,
+    state_notice_canvas: Option<(String,(u32,u32),menu::StateNoticeImage)>,
     autosave_frame: Vec<u16>,
     sav_seen: Option<u64>,
     record: Option<(std::fs::File, u16)>,
@@ -653,6 +672,7 @@ struct PlayApp {
     game_keys: u16,
     /// Mouse events received while paused, consumed by the menu each tick.
     mouse_queue: Vec<MouseEv>,
+    stat_hold: Option<StatHoldRepeat>,
 
     /// A fatal error raised inside a callback; surfaced after `run_app`.
     error: Option<String>,
@@ -1270,32 +1290,376 @@ impl PlayApp {
             }
         }
     }
+    fn finish_state_restore(&mut self) {
+        self.timed_states.reset_clock();
+        if gba_core::ffta_rewards::trace_enabled(){
+            let r=self.machine.bus.ffta_rewards;
+            eprintln!("FFTA_REWARD_RESTORE frame={} settings=Gil:{} AP:{} EXP:{} JP:{}",self.machine.bus.frames,r.gil,r.ap,r.exp,r.jp);
+            for unit in 0..6 {let b=0x80+unit*0x108;let ram=&self.machine.bus.ewram;
+                eprintln!("FFTA_REWARD_UNIT unit={} level={} EXP={} JP={} KO={}",unit,ram[b+9],ram[b+10],u16::from_le_bytes([ram[b+0xd6],ram[b+0xd7]]),ram[b+0xf1]);}
+        }
+        arm_audio_hle(&mut self.machine, None);
+        self.game_mouse.cancel();
+        self.machine.bus.ffta_battle_mouse.cancel();
+        self.machine.bus.keys = 0x3ff;
+        self.game_keys = 0x3ff;
+        self.suppress = 0x3ff;
+        self.held.clear();
+        self.ui_motion = Default::default();
+        self.battle_hud_motion = Default::default();
+        self.ui_pixels.clear();
+        self.panel_pixels.clear();
+        for p in &mut self.ui_auxiliary {
+            p.clear();
+        }
+        for c in &mut self.ui_pack_cache {
+            c.invalidate();
+        }
+        self.ui_scene = Default::default();
+        self.rebuild_temporal();
+        reset_audio_counters(&self.streams);
+        self.next_frame = Instant::now();
+        self.sav_seen = self.machine.bus.save_data().map(fnv64);
+    }
+    fn reward_action(&mut self, action: menu::RewardAction) {
+        let supported=gba_core::ffta_rewards::State::configured(&self.machine.bus.rom,2,2).interprets(0x080498f9);
+        let old=self.machine.bus.ffta_rewards;
+        if action==menu::RewardAction::Open {
+            self.menu.rewards.sync(old.gil,old.ap,old.exp,old.jp,supported);
+        }else if supported {
+            let (gil,ap,exp,jp)=(self.menu.rewards.gil,self.menu.rewards.ap,self.menu.rewards.exp,self.menu.rewards.jp);
+            match crate::reward_settings::save(&self.reward_settings_path,gil,ap,exp,jp) {
+                Ok(())=>{
+                    self.machine.bus.ffta_rewards=gba_core::ffta_rewards::State::configured_all(&self.machine.bus.rom,gil,ap,exp,jp);
+                    if gba_core::ffta_rewards::trace_enabled(){eprintln!("FFTA_REWARD_SETTING Gil={} AP={} EXP={} JP={}",gil,ap,exp,jp);}
+                    self.menu.rewards.status="Saved. Applies to newly calculated rewards.".into();
+                }
+                Err(error)=>{
+                    self.menu.rewards.sync(old.gil,old.ap,old.exp,old.jp,supported);
+                    self.menu.rewards.status=format!("Could not save settings: {error}");
+                }
+            }
+        }
+        self.menu_dirty=true;
+    }
+    fn refresh_character_roster(&mut self){
+        self.menu.characters.open(crate::character_editor::read(&self.machine));
+        self.menu.characters.sprites=crate::roster_sprites::read(&self.machine,&self.menu.characters.rows);
+    }
+    fn gil_editor_action(&mut self, action: menu::GilAction) {
+        use menu::GilAction;
+        if matches!(action,GilAction::LawOpen|GilAction::LawChanged){
+            let old=u8::from(self.machine.bus.ffta_laws.disabled());
+            if action==GilAction::LawOpen{self.menu.law_mode=old;self.menu.law_status="Saved between launches. Judge and battle objectives stay active.".into();}
+            else{let next=self.menu.law_mode;let result=if self.machine.bus.ffta_laws.supported(){crate::law_settings::save(&self.law_settings_path,next)}else{Err("Law option requires the verified EUR ROM".into())};
+                match result{Ok(())=>{self.machine.bus.ffta_laws.set(next==1);self.menu.law_status="Saved. Applies to new law penalties immediately.".into();},Err(e)=>{self.menu.law_mode=old;self.menu.law_status=format!("Could not change laws: {e}");}}
+            }self.menu_dirty=true;return;
+        }
+        if matches!(action,GilAction::ShopOpen|GilAction::ShopChanged){
+            let old=self.machine.bus.ffta_shop_stock.tier();
+            if action==GilAction::ShopOpen{self.menu.shop_tier=old;self.menu.shop_status="Saved between launches. Clan level and skills stay unchanged.".into();}
+            else{
+                let next=self.menu.shop_tier;
+                let result=if self.machine.bus.ffta_shop_stock.supported(){crate::shop_settings::save(&self.shop_settings_path,next)}else{Err("Shop stock requires the verified EUR ROM".into())};
+                match result{Ok(())=>{self.machine.bus.ffta_shop_stock.set(next);self.menu.shop_status="Saved. Leave and re-enter the shop to refresh stock.".into();},Err(e)=>{self.menu.shop_tier=old;self.menu.shop_status=format!("Could not change shop stock: {e}");}}
+            }
+            self.menu_dirty=true;return;
+        }
+        if action==GilAction::CloneOpen {
+            let result=self.menu.characters.current().cloned().ok_or_else(||"No clan member selected".to_string())
+                .and_then(|r|crate::character_clone::open(&self.machine,&r));
+            self.menu.cloning.open(result,self.manual_states.has_editor_backup());self.menu_dirty=true;return;
+        }
+        if action==GilAction::CloneApply {
+            let result:Result<String,String>=(||{
+                let expected=self.menu.cloning.member.as_ref().ok_or("Reopen Clone member to select a source")?;
+                let name=self.menu.cloning.name.trim().to_string();
+                let (at,record,bank)=crate::character_clone::prepare(&self.machine,expected,self.menu.cloning.destination,&name)?;
+                self.manual_states.backup_editor(&self.machine)?;
+                self.machine.bus.ewram[at..at+record.len()].copy_from_slice(&record);self.machine.bus.ffta_names=bank;
+                self.autosave.reset_after_manual_restore();self.timed_states.reset_clock();
+                Ok(format!("Added {name}, unequipped. Undo Last Edit is available."))
+            })();
+            let success=result.is_ok();let message=result.unwrap_or_else(|e|format!("Clone stopped: {e}"));
+            let slot=self.menu.characters.current().map(|r|r.slot).unwrap_or(0);
+            self.refresh_character_roster();
+            self.menu.characters.selected=self.menu.characters.rows.iter().position(|r|r.slot==slot).unwrap_or(0);
+            self.menu.cloning.result(message.clone(),success,self.manual_states.has_editor_backup());
+            self.menu.gil.undo_available=self.manual_states.has_editor_backup();
+            self.state_notice=Some((Instant::now(),message));self.menu_dirty=true;return;
+        }
+        if action==GilAction::LevelOpen {
+            let result=self.menu.characters.current().cloned().ok_or_else(||"No clan member selected".to_string())
+                .and_then(|r|crate::character_levels::open(&self.machine,&r));
+            self.menu.levels.open(result,self.manual_states.has_editor_backup());self.menu_dirty=true;return;
+        }
+        if action==GilAction::LevelPreview {
+            let result=(||{
+                let member=self.menu.levels.member.as_ref().ok_or("No clan member selected")?;
+                let job=self.menu.levels.job_id().ok_or("No growth job selected")?;
+                crate::character_levels::preview_edit(&self.machine,member,self.menu.levels.target,job,self.menu.levels.mode,self.menu.levels.overrides)
+            })();
+            self.menu.levels.limits=if self.menu.levels.mode&2!=0{self.menu.levels.member.as_ref().and_then(|r|crate::character_levels::game_limits(&self.machine,r,self.menu.levels.target).ok())}else{None};
+            self.menu.levels.set_preview(result);self.menu_dirty=true;return;
+        }
+        if action==GilAction::LevelApply {
+            let member=self.menu.levels.member.clone();let plan=self.menu.levels.plan.clone();
+            let result:Result<String,String>=(||{
+                let member=member.as_ref().ok_or("No clan member selected")?;
+                let plan=plan.as_ref().ok_or("Preview the character changes first")?;
+                let (at,record)=crate::character_levels::prepare_edit(&self.machine,member,plan,self.menu.levels.mode,self.menu.levels.overrides)?;
+                self.manual_states.backup_editor(&self.machine)?;
+                self.machine.bus.ewram[at..at+record.len()].copy_from_slice(&record);
+                self.autosave.reset_after_manual_restore();self.timed_states.reset_clock();
+                Ok(format!("Updated {}: level {} and previewed stats. Undo is available.",member.name,plan.target))
+            })();
+            let message=result.unwrap_or_else(|e|format!("Level edit stopped: {e}"));
+            let slot=member.as_ref().map(|m|m.slot).unwrap_or(0);
+            self.refresh_character_roster();
+            self.menu.characters.selected=self.menu.characters.rows.iter().position(|r|r.slot==slot).unwrap_or(0);
+            let result=self.menu.characters.current().cloned().ok_or_else(||"No clan member selected".to_string())
+                .and_then(|r|crate::character_levels::open(&self.machine,&r));
+            self.menu.levels.open(result,self.manual_states.has_editor_backup());self.menu.levels.status=message.clone();
+            self.menu.gil.undo_available=self.manual_states.has_editor_backup();
+            self.state_notice=Some((Instant::now(),message));self.menu_dirty=true;return;
+        }
+        if action==GilAction::AbilitiesOpen {
+            let result=self.menu.characters.current().cloned().ok_or_else(||"No clan member selected".to_string())
+                .and_then(|r|crate::job_abilities::read(&self.machine,&r));
+            self.menu.abilities.open(result,self.manual_states.has_editor_backup());self.menu_dirty=true;return;
+        }
+        if action==GilAction::JobChangeApply {
+            let member=self.menu.abilities.member.clone();let job=self.menu.abilities.job_id();
+            let result:Result<String,String>=(||{
+                let expected=member.as_ref().ok_or("No clan member selected")?;
+                let target=job.ok_or("No target job selected")?;
+                if !self.menu.abilities.pending.is_empty(){return Err("Apply pending AP changes first".into());}
+                let (at,record,inventory)=crate::job_abilities::prepare_job(&self.machine,expected,target)?;
+                let name=crate::item_editor::unit_job(&self.machine.bus.rom,target,record[6])?;
+                self.manual_states.backup_editor(&self.machine)?;
+                self.machine.bus.ewram[at..at+record.len()].copy_from_slice(&record);
+                self.machine.bus.ewram[0x1940..0x1f1c].copy_from_slice(&inventory);
+                self.autosave.reset_after_manual_restore();self.timed_states.reset_clock();
+                Ok(format!("Changed {} to {}. Equipment returned; stats kept. Undo available.",expected.name,name))
+            })();
+            let message=result.unwrap_or_else(|e|format!("Job change stopped: {e}"));let slot=member.as_ref().map(|m|m.slot).unwrap_or(0);
+            self.refresh_character_roster();
+            self.menu.characters.selected=self.menu.characters.rows.iter().position(|r|r.slot==slot).unwrap_or(0);
+            let result=self.menu.characters.current().cloned().ok_or_else(||"No clan member selected".to_string()).and_then(|r|crate::job_abilities::read(&self.machine,&r));
+            self.menu.abilities.open(result,self.manual_states.has_editor_backup());self.menu.abilities.status=message.clone();
+            self.menu.gil.undo_available=self.manual_states.has_editor_backup();self.state_notice=Some((Instant::now(),message));self.menu_dirty=true;return;
+        }
+        if action==GilAction::AbilitiesApply {
+            let job=self.menu.abilities.job_id();let skill=self.menu.abilities.skill_id();
+            let member=self.menu.abilities.member.clone();
+            let changes:Vec<_>=self.menu.abilities.pending.iter().map(|(&i,&n)|(i,n)).collect();
+            let result:Result<String,String>=(||{
+                let expected=member.as_ref().ok_or("No clan member selected")?;
+                let (at,record)=crate::job_abilities::prepare(&self.machine,expected,&changes)?;
+                self.manual_states.backup_editor(&self.machine)?;
+                self.machine.bus.ewram[at..at+record.len()].copy_from_slice(&record);
+                self.autosave.reset_after_manual_restore();self.timed_states.reset_clock();
+                Ok(format!("Applied {} ability changes. Equipped job unchanged. Undo is available.",changes.len()))
+            })();
+            let message=result.unwrap_or_else(|e|format!("Ability edit stopped: {e}"));
+            let slot=member.as_ref().map(|m|m.slot).unwrap_or(0);
+            self.refresh_character_roster();
+            self.menu.characters.selected=self.menu.characters.rows.iter().position(|r|r.slot==slot).unwrap_or(0);
+            let result=self.menu.characters.current().cloned().ok_or_else(||"No clan member selected".to_string())
+                .and_then(|r|crate::job_abilities::read(&self.machine,&r));
+            self.menu.abilities.open(result,self.manual_states.has_editor_backup());self.menu.abilities.restore_selection(job,skill);self.menu.abilities.status=message.clone();
+            self.menu.gil.undo_available=self.manual_states.has_editor_backup();
+            self.state_notice=Some((Instant::now(),message));self.menu_dirty=true;return;
+        }
+        if action==GilAction::RenameApply {
+            let slot=self.menu.characters.expected.as_ref().map(|r|r.slot).unwrap_or(0);
+            let result:Result<String,String>=(||{
+                let expected=self.menu.characters.expected.as_ref().ok_or("No clan member selected")?;
+                let text=self.menu.characters.proposed.clone();
+                let (at,ptr,bank)=crate::character_editor::prepare_rename(&self.machine,expected,&text)?;
+                self.manual_states.backup_editor(&self.machine)?;
+                self.machine.bus.ffta_names=bank;self.machine.bus.ewram[at..at+4].copy_from_slice(&ptr.to_le_bytes());
+                self.autosave.reset_after_manual_restore();self.timed_states.reset_clock();
+                Ok(format!("Renamed to {text}. Undo Last Edit is available."))
+            })();
+            let message=result.unwrap_or_else(|e|format!("Rename stopped: {e}"));
+            self.refresh_character_roster();
+            self.menu.characters.selected=self.menu.characters.rows.iter().position(|r|r.slot==slot).unwrap_or(0);
+            self.menu.characters.begin_rename();self.menu.rename_result(message.clone());
+            self.menu.gil.undo_available=self.manual_states.has_editor_backup();
+            self.state_notice=Some((Instant::now(),message));self.menu_dirty=true;return;
+        }
+        if action==GilAction::CharactersOpen {
+            self.menu.gil.undo_available=self.manual_states.has_editor_backup();
+            self.refresh_character_roster();
+            self.menu_dirty=true;return;
+        }
+        if action==GilAction::ItemsOpen {
+            self.menu.items.open_rows(crate::item_editor::owned(&self.machine));
+            self.menu.gil.undo_available=self.manual_states.has_editor_backup();
+            self.menu.items.undo_available=self.manual_states.has_editor_backup();
+            self.menu_dirty=true;
+            return;
+        }
+        if action==GilAction::ItemApply {
+            let result:Result<String,String>=(||{
+                let changes=self.menu.items.pending_changes();
+                crate::item_editor::owned(&self.machine)?;
+                let prepared=crate::item_editor::prepare_batch(&self.machine.bus.ewram,&changes)?;
+                self.manual_states.backup_editor(&self.machine)?;
+                self.machine.bus.ewram.copy_from_slice(&prepared);
+                self.autosave.reset_after_manual_restore();self.timed_states.reset_clock();
+                Ok(format!("Applied {} item changes. Undo Last Edit restores the whole batch.",changes.len()))
+            })();
+            let message=result.unwrap_or_else(|e|format!("Edit stopped: {e}"));
+            self.menu.items.refresh_rows(crate::item_editor::owned(&self.machine));
+            self.menu.items.undo_available=self.manual_states.has_editor_backup();
+            self.menu.gil.undo_available=self.manual_states.has_editor_backup();
+            self.menu.item_result(message.clone());self.state_notice=Some((Instant::now(),message.clone()));
+            self.menu_dirty=true;eprintln!("FFTA_ITEM_EDITOR {message}");return;
+        }
+        if action==GilAction::Open {
+            self.menu.gil.open(crate::gil_editor::ready(&self.machine),self.manual_states.has_editor_backup());
+            self.menu_dirty=true;
+            return;
+        }
+        let result: Result<String,String>=(|| {
+            let current=if action==GilAction::Undo{0}else{crate::gil_editor::ready(&self.machine)?};
+            match action {
+                GilAction::Open|GilAction::ItemsOpen|GilAction::ItemApply|GilAction::CharactersOpen|GilAction::RenameApply|GilAction::AbilitiesOpen|GilAction::AbilitiesApply|GilAction::JobChangeApply|GilAction::LevelOpen|GilAction::LevelPreview|GilAction::LevelApply|GilAction::CloneOpen|GilAction::CloneApply|GilAction::ShopOpen|GilAction::ShopChanged|GilAction::LawOpen|GilAction::LawChanged=>unreachable!(),
+                GilAction::Apply=>{
+                    if current!=self.menu.gil.current {return Err("Gil changed; reopen the editor".into());}
+                    let proposed=self.menu.gil.proposed;
+                    if proposed>crate::gil_editor::TEST_MAX {return Err("Amount exceeds test range".into());}
+                    if proposed==current {return Ok("No change to apply.".into());}
+                    self.manual_states.backup_editor(&self.machine)?;
+                    crate::gil_editor::write(&mut self.machine.bus.ewram,current,proposed)?;
+                    self.autosave.reset_after_manual_restore();self.timed_states.reset_clock();
+                    Ok(format!("Applied: {current} -> {proposed} Gil. Backup saved."))
+                }
+                GilAction::Undo=>{
+                    self.manual_states.undo_editor(&mut self.machine)?;
+                    self.autosave.reset_after_manual_restore();self.timed_states.reset_clock();
+                    self.finish_state_restore();
+                    self.mouse_queue.clear();self.pending_key=None;self.pending_pad=None;
+                    self.paused=false;
+                    Ok("Restored the game state before the last edit".into())
+                }
+            }
+        })();
+        let message=result.unwrap_or_else(|e|format!("Edit stopped: {e}"));
+        self.menu.gil.open(crate::gil_editor::ready(&self.machine),self.manual_states.has_editor_backup());
+        self.menu.gil_result(message.clone());
+        if self.menu.clone_page_active(){
+            self.menu.cloning.result(message.clone(),true,self.manual_states.has_editor_backup());
+        }
+        if self.menu.level_page_active(){
+            let slot=self.menu.levels.member.as_ref().map(|m|m.slot).unwrap_or(0);
+            self.refresh_character_roster();
+            self.menu.characters.selected=self.menu.characters.rows.iter().position(|r|r.slot==slot).unwrap_or(0);
+            let result=self.menu.characters.current().cloned().ok_or_else(||"No clan member selected".to_string())
+                .and_then(|r|crate::character_levels::open(&self.machine,&r));
+            self.menu.levels.open(result,self.manual_states.has_editor_backup());self.menu.levels.status=message.clone();
+        }
+        if self.menu.item_page_active(){
+            self.menu.items.refresh_rows(crate::item_editor::owned(&self.machine));
+            self.menu.items.undo_available=self.manual_states.has_editor_backup();
+            self.menu.item_result(message.clone());
+        }
+        self.state_notice=Some((Instant::now(),message.clone()));
+        self.menu_dirty=true;
+        eprintln!("FFTA_GIL_EDITOR {message}");
+    }
+    fn state_action(&mut self, action: menu::StateAction) {
+        use menu::StateAction;
+        if matches!(action,StateAction::AutoRefresh|StateAction::AutoLoad|StateAction::AutoUndoLoad|StateAction::TimerChanged|StateAction::ManualTab){
+            if action==StateAction::ManualTab{self.menu.states.automatic=false;self.menu.states.card=self.manual_states.card();self.menu_dirty=true;return;}
+            let result:Result<String,String>=(||{match action{
+                StateAction::TimerChanged=>{self.timed_states.set_minutes(self.menu.states.autos.minutes)?;Ok("Autosave timer saved. Counts active play time.".into())},
+                StateAction::AutoLoad|StateAction::AutoUndoLoad=>{
+                    if action==StateAction::AutoUndoLoad{self.manual_states.load(&mut self.machine,true)?;}else{let bytes=self.timed_states.bytes(self.menu.states.auto_load_id)?;self.manual_states.load_external(&mut self.machine,&bytes)?;}
+                    self.autosave.reset_after_manual_restore();self.timed_states.reset_clock();self.finish_state_restore();self.mouse_queue.clear();self.pending_key=None;self.pending_pad=None;self.paused=false;
+                    Ok(if action==StateAction::AutoUndoLoad{"Returned to before the last load".into()}else{"Loaded autosave. Undo Load is available.".into()})
+                },_=>Ok(String::new())
+            }})();
+            self.menu.states.autos.rows=self.timed_states.rows();self.menu.states.autos.minutes=self.timed_states.minutes;
+            self.menu.states.autos.card=self.timed_states.card(self.menu.states.autos.id());self.menu.states.autos.card.undo_load=self.manual_states.card().undo_load;
+            if action!=StateAction::AutoRefresh{let msg=result.unwrap_or_else(|e|format!("Autosave action failed: {e}"));self.menu.states.autos.status=msg.clone();self.state_notice=Some((Instant::now(),msg));}
+            self.menu_dirty=true;return;
+        }
+        self.manual_states.slot = self.menu.states.slot.clamp(1,30);
+        let result: Result<String,String> = match action {
+            StateAction::AutoRefresh|StateAction::AutoLoad|StateAction::AutoUndoLoad|StateAction::TimerChanged|StateAction::ManualTab=>unreachable!(),
+            StateAction::Refresh => Ok(String::new()),
+            StateAction::Save => self.manual_states.save(&self.machine)
+                .map(|_| format!("Saved State {}", self.manual_states.slot)),
+            StateAction::UndoSave => self.manual_states.undo_save()
+                .map(|_| format!("Restored State {}'s previous save", self.manual_states.slot)),
+            StateAction::Load | StateAction::UndoLoad => {
+                let undo = action == StateAction::UndoLoad;
+                match self.manual_states.load(&mut self.machine,undo) {
+                    Ok(()) => {
+                        self.autosave.reset_after_manual_restore();self.timed_states.reset_clock();
+                        self.finish_state_restore();
+                        self.mouse_queue.clear();
+                        self.pending_key = None;
+                        self.pending_pad = None;
+                        self.paused = false;
+                        Ok(if undo { "Returned to before the last load".into() }
+                           else { format!("Loaded State {}",self.manual_states.slot) })
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        };
+        self.menu.states.card = self.manual_states.card();
+        if action != StateAction::Refresh {
+            let message = result.unwrap_or_else(|e| format!("State action failed: {e}"));
+            eprintln!("FFTA_MANUAL_STATE {message}");
+            self.menu.states.message = message.clone();
+            self.state_notice = Some((Instant::now(),message));
+        }
+        self.menu_dirty = true;
+    }
+    fn manual_state_key(&mut self, code: KeyCode) {
+        self.menu.states.automatic=false;
+        use menu::StateAction;
+        if matches!(code, KeyCode::F6 | KeyCode::F7) {
+            // Requested ordering: F6 increases, F7 decreases.
+            self.manual_states.select(code == KeyCode::F6);
+            self.menu.states.slot = self.manual_states.slot;
+            let message = format!("State {} / 30  |  F5 Save  |  F10 Load", self.manual_states.slot);
+            self.state_notice = Some((Instant::now(),message));
+            return;
+        }
+        self.menu.states.slot = self.manual_states.slot;
+        if code == KeyCode::F5 && self.manual_states.card().occupied {
+            self.paused = true;
+            self.game_mouse.cancel();
+            self.machine.bus.ffta_battle_mouse.cancel();
+            self.machine.bus.keys = 0x3ff;
+            self.game_keys = 0x3ff;
+            self.held.clear();
+            self.mouse_queue.clear();
+            self.menu.states.card = self.manual_states.card();
+            self.menu.confirm_state_save(self.manual_states.slot);
+            self.menu_dirty = true;
+            reset_audio_counters(&self.streams);
+            return;
+        }
+        let action = match code {
+            KeyCode::F5 => StateAction::Save,
+            KeyCode::F10 => StateAction::Load,
+            KeyCode::F4 => StateAction::UndoLoad,
+            _ => return,
+        };
+        self.state_action(action);
+    }
     fn load_auto_state(&mut self) {
         self.autosave.pending_load = false;
         match self.autosave.load(&mut self.machine) {
             Ok(()) => {
-                arm_audio_hle(&mut self.machine, None);
-                self.game_mouse.cancel();
-                self.machine.bus.ffta_battle_mouse.cancel();
-                self.machine.bus.keys = 0x3ff;
-                self.game_keys = 0x3ff;
-                self.suppress = 0x3ff;
-                self.held.clear();
-                self.ui_motion = Default::default();
-                self.battle_hud_motion = Default::default();
-                self.ui_pixels.clear();
-                self.panel_pixels.clear();
-                for p in &mut self.ui_auxiliary {
-                    p.clear();
-                }
-                for c in &mut self.ui_pack_cache {
-                    c.invalidate();
-                }
-                self.ui_scene = Default::default();
-                self.rebuild_temporal();
-                reset_audio_counters(&self.streams);
-                self.next_frame = Instant::now();
-                self.sav_seen = self.machine.bus.save_data().map(fnv64);
+                self.finish_state_restore();
                 eprintln!("FFTA_AUTOSAVE restored frame={}", self.machine.bus.frames);
             }
             Err(e) => {
@@ -1416,6 +1780,17 @@ impl PlayApp {
         };
         let size = window.inner_size();
         let phys = (size.width.max(1), size.height.max(1));
+        let notice_message = if !self.paused && !save_ui {
+            self.state_notice.as_ref().filter(|(since,_)|since.elapsed()<Duration::from_secs(3))
+                .map(|(_,message)|message.clone())
+        } else { None };
+        if let Some(message)=&notice_message {
+            let rebuild=self.state_notice_canvas.as_ref()
+                .map_or(true,|(old,window,_)|old!=message || *window!=phys);
+            if rebuild {
+                self.state_notice_canvas=Some((message.clone(),phys,menu::state_notice_image(message,phys)));
+            }
+        }
         let frame_dims = if self.paused || save_ui {
             let (w, h) = self.menu_dimensions();
             (w as u32, h as u32)
@@ -1453,6 +1828,12 @@ impl PlayApp {
                 grid.strength = 0.;
                 grid.scale_mode = 1;
             }
+            let overlay=if notice_message.is_some() {
+                self.state_notice_canvas.as_ref().map(|(_,_,image)|screen::present::RgbaOverlay {
+                    pixels:&image.pixels,size:image.size,origin:image.origin,
+                })
+            } else { None };
+            p.set_rgba_overlay(overlay);
             match p.present(&self.rgba, frame_dims, phys, &grid, self.view) {
                 Ok(()) => {
                     self.presenter = Some(p);
@@ -1619,6 +2000,23 @@ impl PlayApp {
                         if let Some(c) = ui.sample(x as f32 + 0.5, y as f32 + 0.5) {
                             buffer[y * w as usize + x] =
                                 (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32;
+                        }
+                    }
+                }
+            }
+        }
+        if !self.paused && !save_ui
+            && self.state_notice.as_ref().is_some_and(|(since,_)|since.elapsed()<Duration::from_secs(3))
+        {
+            if let Some((_,window,image))=&self.state_notice_canvas {
+                if *window==(w,h) {
+                    let (x0,y0)=image.origin;
+                    let (iw,ih)=image.size;
+                    for y in 0..ih.min(h.saturating_sub(y0)) {
+                        for x in 0..iw.min(w.saturating_sub(x0)) {
+                            let c=image.pixels[(y*iw+x) as usize];
+                            buffer[((y0+y)*w+x0+x) as usize]=
+                                (c[0] as u32)<<16|(c[1] as u32)<<8|c[2] as u32;
                         }
                     }
                 }
@@ -2643,6 +3041,9 @@ impl PlayApp {
             &self.machine,
             auto_eligible && !self.paused && !self.machine.bus.skip_render,
         );
+        if let Some(result)=self.timed_states.tick(&self.machine,auto_eligible&&!self.paused&&!self.machine.bus.skip_render,Instant::now()){
+            match result{Ok(slot)=>{eprintln!("FFTA_TIMED_AUTOSAVE saved slot={slot}");self.state_notice=Some((Instant::now(),format!("Autosaved / slot {slot}")));},Err(e)=>eprintln!("FFTA_TIMED_AUTOSAVE failed: {e}")}
+        }
         self.handoff_audio();
     }
 
@@ -2879,6 +3280,8 @@ impl ApplicationHandler for PlayApp {
             // Lost focus: a key held during alt-tab might never deliver its
             // release, so drop the held set defensively (no stuck inputs).
             WindowEvent::Focused(false) => {
+                self.stat_hold=None;
+                self.mouse_queue.clear();
                 self.held.clear();
                 self.game_keys = 0x3ff;
                 self.game_mouse.cancel();
@@ -2897,6 +3300,25 @@ impl ApplicationHandler for PlayApp {
             } => {
                 match state {
                     ElementState::Pressed => {
+                        if self.paused && self.menu.item_search_active(){
+                            if matches!(code,KeyCode::Escape|KeyCode::Enter|KeyCode::NumpadEnter){
+                                self.menu.finish_item_search();self.menu_dirty=true;self.pending_key=None;return;
+                            }
+                            if code==KeyCode::Backspace{
+                                self.menu.item_search_text("",true);self.menu_dirty=true;self.pending_key=None;return;
+                            }
+                            if let Some(t)=text.as_ref().filter(|t|t.chars().any(|c|!c.is_control())){
+                                self.menu.item_search_text(t.as_str(),false);self.menu_dirty=true;self.pending_key=None;return;
+                            }
+                        }
+                        if !self.paused
+                            && std::env::var("FFTA_MANUAL_STATES").as_deref() == Ok("1")
+                            && matches!(code, KeyCode::F4 | KeyCode::F5 | KeyCode::F6 | KeyCode::F7 | KeyCode::F10)
+                            && !self.key_pairs.iter().any(|(key, _)| *key == code)
+                        {
+                            if !repeat { self.manual_state_key(code); }
+                            return;
+                        }
                         if self
                             .key_pairs
                             .iter()
@@ -3019,6 +3441,7 @@ impl ApplicationHandler for PlayApp {
                 }
             }
             WindowEvent::CursorLeft { .. } => {
+                self.stat_hold=None;
                 self.pub_scroll_drag = None;
                 self.mouse_pos = None;
                 self.game_mouse.cancel();
@@ -3029,6 +3452,7 @@ impl ApplicationHandler for PlayApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                self.stat_hold=None;
                 self.pub_scroll_drag = None;
                 if self.paused {
                     self.mouse_queue.push(MouseEv::Release);
@@ -3043,7 +3467,7 @@ impl ApplicationHandler for PlayApp {
                 if let (true, Some(p)) = (self.paused, self.mouse_pos) {
                     match button {
                         MouseButton::Left => self.mouse_queue.push(MouseEv::Click(p, true)),
-                        MouseButton::Right => self.mouse_queue.push(MouseEv::Click(p, false)),
+                        MouseButton::Right => {}, // Right click does not close paused menus.
                         _ => {}
                     }
                 } else if !self.icfg.mouse_keyboard {
@@ -3204,11 +3628,13 @@ impl ApplicationHandler for PlayApp {
                 event_loop.exit();
                 return;
             }
+            self.stat_hold=None;
             self.paused = !self.paused;
             if self.paused {
                 self.game_mouse.cancel();
                 self.machine.bus.ffta_battle_mouse.cancel();
                 self.menu.reset();
+                self.menu.states.slot = self.manual_states.slot;
                 self.menu_dirty = true;
                 // Drop stale pointer events from before the menu opened.
                 self.mouse_queue.clear();
@@ -3224,7 +3650,9 @@ impl ApplicationHandler for PlayApp {
             }
         }
 
+        if !self.paused{self.stat_hold=None;}
         if self.paused {
+            self.timed_states.pause();
             let previous_aspect = self.av.video_aspect.clone();
             self.menu_dirty |= self.pending_key.is_some()
                 || self.pending_pad.is_some()
@@ -3369,6 +3797,7 @@ impl ApplicationHandler for PlayApp {
                 if !self.menu_tap_filter.accept_at(control, Instant::now()) {
                     continue;
                 }
+                self.stat_hold=None;
                 if let Some(a) = self.menu.handle(ev, &mut self.av) {
                     acts.push(a);
                 }
@@ -3385,7 +3814,7 @@ impl ApplicationHandler for PlayApp {
                     continue;
                 }
                 match m {
-                    MouseEv::Release => {},
+                    MouseEv::Release => self.stat_hold=None,
                     MouseEv::Move(p) => {
                         if let Some((x, y)) = self.window_to_frame(p) {
 
@@ -3393,21 +3822,38 @@ impl ApplicationHandler for PlayApp {
                         }
                     }
                     MouseEv::Click(p, left) => {
+                        self.stat_hold=None;
                         if let Some((x, y)) = self.window_to_frame(p) {
+                            if left{self.stat_hold=self.menu.stat_repeat_target(x,y,fw,fh).map(|target|StatHoldRepeat::new(target,Instant::now()));}
                             if let Some(a) = self.menu.click(x, y, fw, fh, left, &mut self.av) {
                                 acts.push(a);
                             }
                         }
                     }
                     MouseEv::Wheel(up) => {
+                        self.stat_hold=None;
                         if let Some(a) = self.menu.scroll(up, &mut self.av) {
                             acts.push(a);
                         }
                     }
                 }
             }
+            if self.stat_hold.is_some(){
+                let point=self.mouse_pos.and_then(|p|self.window_to_frame(p));
+                let target=point.and_then(|(x,y)|self.menu.stat_repeat_target(x,y,fw,fh));
+                if target!=self.stat_hold.as_ref().map(|h|h.target){self.stat_hold=None;}
+                else if let(Some((x,y)),Some(target),Some(hold))=(point,target,self.stat_hold.as_mut()){
+                    if hold.due(target,Instant::now()){
+                        if let Some(a)=self.menu.click(x,y,fw,fh,true,&mut self.av){acts.push(a);}
+                        self.menu_dirty=true;
+                    }
+                }
+            }
             for action in acts {
                 match action {
+                    menu::MenuAction::Rewards(action) => self.reward_action(action),
+                    menu::MenuAction::GilEditor(action) => self.gil_editor_action(action),
+                    menu::MenuAction::ManualState(action) => self.state_action(action),
                     menu::MenuAction::DebugVictory => {
                         let result = gba_core::ffta_debug::request_victory(&mut self.machine.bus);
                         eprintln!(
@@ -3534,6 +3980,7 @@ impl ApplicationHandler for PlayApp {
             }
             // Poll input at the normal menu cadence, but rasterize the native-
             // resolution canvas only when input or window events changed it.
+            if self.menu.clone_page_active(){self.menu_dirty |= self.menu.cloning.tick();}
             if !self.menu_dirty {
                 std::thread::sleep(Duration::from_millis(16));
                 return;
@@ -3916,7 +4363,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
         }
     };
 
-    let title = String::from("FFTARecomp");
+    let title = String::from("FFTA Clan Desk");
 
     // Audio. Both paths run at once so the in-game menu can crossfade between
     // faithful and enhanced live (the callback slews between them, the producer
@@ -4087,6 +4534,18 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
                     .unwrap_or(cwd.join("Saves"))
             }
         });
+    let law_settings_path=save_dir.join("law-penalties.cfg");
+    match crate::law_settings::load(&law_settings_path){Ok(Some(mode))=>{machine.bus.ffta_laws.set(mode==1);},Ok(None)=>{},Err(e)=>eprintln!("FFTA_LAWS config_error={e}")}
+    let shop_settings_path=save_dir.join("shop-stock.cfg");
+    match crate::shop_settings::load(&shop_settings_path){Ok(Some(tier))=>{machine.bus.ffta_shop_stock.set(tier);},Ok(None)=>{},Err(e)=>eprintln!("FFTA_SHOP_STOCK config_error={e}")}
+    let reward_settings_path=save_dir.join("rewards.cfg");
+    match crate::reward_settings::load(&reward_settings_path) {
+        Ok(Some((gil,ap,exp,jp)))=>machine.bus.ffta_rewards=gba_core::ffta_rewards::State::configured_all(&machine.bus.rom,gil,ap,exp,jp),
+        Ok(None)=>{},
+        Err(error)=>eprintln!("FFTA_REWARDS config_error={error}"),
+    }
+    let manual_states = crate::manual_states::ManualStates::new(&save_dir);
+    let timed_states=crate::timed_states::TimedStates::new(&save_dir,&rom_sha256(&machine.bus.rom));
     let autosave =
         crate::autosave::AutoSave::new_at(&sav_path, &rom_sha256(&machine.bus.rom), save_dir);
     let game_mouse =
@@ -4099,7 +4558,14 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
         machine,
         autosave,
         autosave_frame: Vec::new(),
+        manual_states,
+        timed_states,
+        state_notice: None,
+        state_notice_canvas: None,
         sav_path,
+        reward_settings_path,
+        shop_settings_path,
+        law_settings_path,
         sav_seen,
         record,
         native,
@@ -4190,6 +4656,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
         game_mouse,
         game_keys: 0x3ff,
         mouse_queue: Vec::new(),
+        stat_hold: None,
         error: None,
     };
 
@@ -4881,4 +5348,18 @@ mod gamepad_capture_simulation {
         assert!(xinput_pressed(pressed, "South", 0.2));
         assert!(xinput_new_press(Some(pressed), released, 0.2).is_none());
     }
+}
+
+#[cfg(test)]mod stat_hold_repeat_tests{
+ use super::*;
+ #[test]fn stat_hold_repeat_delays_then_steady_without_catchup_or_other_target(){
+  let now=Instant::now();let mut h=StatHoldRepeat::new((2,true),now);
+  assert!(!h.due((2,true),now+Duration::from_millis(449)));
+  assert!(h.due((2,true),now+Duration::from_millis(450)));
+  assert!(!h.due((2,true),now+Duration::from_millis(609)));
+  assert!(h.due((2,true),now+Duration::from_millis(610)));
+  assert!(!h.due((2,false),now+Duration::from_secs(10)));
+  assert!(h.due((2,true),now+Duration::from_secs(10)));
+  assert!(!h.due((2,true),now+Duration::from_secs(10)));
+ }
 }

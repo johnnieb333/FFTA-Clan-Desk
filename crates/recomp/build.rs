@@ -1,8 +1,8 @@
 fn main() {
-    #[cfg(windows)]
-    {
+    #[cfg(windows)] {
         let mut res = winresource::WindowsResource::new();
-        res.set_icon("../installer/assets/icon.ico");
+        res.set("ProductName", "FFTA Clan Desk");
+        res.set("FileDescription", "FFTA Clan Desk game runtime");
         res.compile().unwrap();
     }
 }

@@ -132,6 +132,7 @@ fn archive_legacy(original: &Path, quick: &Path) {
         Err(e) => eprintln!("FFTA_IMPORT archive_error={e}"),
     }
 }
+pub fn editor_world_map(mem: &gba_core::MemMap) -> bool { clean_map(mem) }
 fn clean_map(mem: &gba_core::MemMap) -> bool {
     let half = |o| u16::from_le_bytes([mem.io[o], mem.io[o + 1]]);
     let word = |b: &[u8], o: usize| {
@@ -597,6 +598,18 @@ impl AutoSave {
             }
             let _ = tx.try_send((0, data, metadata));
         }
+    }
+    pub fn reset_after_manual_restore(&mut self) {
+        self.map_state = None;
+        self.map_was_clean = false;
+        self.return_after_save = None;
+        self.pending_import = None;
+        self.pending_load = false;
+        self.mission_image.clear();
+        self.mission_stage = None;
+        self.mission_picked = false;
+        self.last = Instant::now();
+        self.message = None;
     }
     pub fn load(&mut self, m: &mut gba_core::Machine) -> Result<(), String> {
         let path = if self.pending_slot == 0 {
@@ -1991,4 +2004,13 @@ mod tests {
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+/// Read existing QuickSave bundles without changing the native save system.
+pub fn recovery_state(path:&std::path::Path)->Result<Vec<u8>,String>{
+ for candidate in[path.to_path_buf(),backup(path)]{
+  if std::fs::metadata(&candidate).map(|m|m.len()<=16*1024*1024).unwrap_or(false){
+   if let Ok(data)=std::fs::read(candidate){if let Ok((state,_))=unpack(&data){return Ok(state);}}
+  }
+ }Err("No valid QuickSave or recovery copy".into())
 }

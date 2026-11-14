@@ -53,3 +53,21 @@ Saves/
 **/jniLibs/
 
 /Installer/FFTARecomp-windows-x86_64.zip
+
+# Clan Desk private test data, ROM-derived research and temporary outputs
+/test-saves/
+/AutoStates/
+/ManualStates/
+/ffta-*.json
+/ffta-*.txt
+/ffta-*.zip
+/ffta-jp-popup-*/
+/ffta-victory-banner-*/
+/jp-reward-live.txt
+/cratesrecompsrcplay.rs:376:4
+**/*.before-*
+*.srm
+*.state.*
+*.undone
+*.cfg.tmp
+/RELEASE-REVIEW-*.json

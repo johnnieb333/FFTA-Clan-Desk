@@ -82,6 +82,8 @@ pub struct DialogueState {
     pub(crate) capture_backing: bool,
     pub backing: Vec<UiPixel>,
     pub action_layout: bool,
+    pub(crate) law_layout:bool,
+    pub(crate) victory_layout:bool,
     /// Whole native naming canvas, independent of world zoom.
     pub naming_layout: bool,
     /// 0 hidden, 1 native entering, 2 complete, 3 native exiting.
@@ -413,6 +415,12 @@ pub(crate) fn action_portrait(attrs: [u16; 3], x: i32, y: i32) -> bool {
         // Long-eared portraits include separate pieces above Y=64. They
         // belong to the same verified 8-bpp portrait atlas, not the world.
         && (-64..160).contains(&y)
+}
+pub(crate) fn law_cursor(attrs:[u16;3],x:i32,y:i32,bounds:Option<[i32;4]>)->bool{
+    let Some([l,t,r,b])=bounds else{return false;};
+    attrs[0]&0xff00==0x8000 && attrs[1]&0xfe00==0 && attrs[2]&0xfc00==0
+        && ((0x2dc..=0x2df).contains(&(attrs[2]&1023)) || (0x37c..=0x37f).contains(&(attrs[2]&1023)))
+        && x>=l && x+8<=r && y>=t && y+16<=b
 }
 pub(crate) fn notice_cursor(attrs:[u16;3],x:i32,y:i32,bounds:Option<[i32;4]>) -> bool {
     let Some([l,t,r,b])=bounds else{return false;};

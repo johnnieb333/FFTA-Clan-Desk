@@ -713,6 +713,31 @@ fn engagement_bounds(mem:&MemMap)->Option<[i32;4]> {
     }}
     None
 }
+// The law viewer is one two-column frame, not the right-side action menu.
+// Its measured atlas corners, repeated top edge and alternating row ends
+// identify it independently of translated labels or the selected law.
+fn battle_law_bounds(mem:&MemMap)->Option<[i32;4]>{
+    if !mem.ffta_movement.europe_profile || (io16(mem,12),io16(mem,14))!=(0x5c08,0x4a09)
+        || io16(mem,0)&0xc00!=0xc00{return None;}
+    let base=((io16(mem,14)>>8)&31)as usize*0x800;
+    let tile=|x:usize,y:usize|{let o=base+(y*32+x)*2;u16::from_le_bytes([mem.vram[o],mem.vram[o+1]])};
+    let mut found=None;
+    for y in 0..16{for x in 0..10{
+        if tile(x,y)!=0x70e1{continue;}
+        // Deployment uses a single row; battles may display up to three.
+        // Match complete frame rows rather than one fixed panel height.
+        for rows in 1..=3{let bottom=y+2+rows*2;if bottom>=20{continue;}
+            if tile(x,bottom)!=0x70ee||!(0..rows).all(|row|
+                tile(x,y+2+row*2)==0x70f3 && tile(x,y+3+row*2)==0x70f6){continue;}
+            for r in x+20..30{
+                if tile(r,y)!=0x74e1||tile(r,bottom)!=0x74ee||tile(r,y+1)!=0x94e3
+                    || !(x+1..r).all(|xx|tile(xx,y)==0x70e2 && tile(xx,bottom)==0x70ef){continue;}
+                if found.is_some(){return None;}
+                found=Some([((x as i32*8)-8).max(0),y as i32*8,(r+1)as i32*8,(bottom+1)as i32*8]);
+            }
+        }
+    }}found
+}
 fn notice_bounds(mem:&MemMap)->Option<[i32;4]> {
     if let Some((rect,0))=text_window_owner(mem,4,16) {
         let [l,t,r,b]=rect.map(|v|v as usize);
@@ -812,6 +837,30 @@ fn dialogue_controller_present(mem: &MemMap) -> bool {
     let owner=u32::from_le_bytes(mem.ewram[0x918c..0x9190].try_into().unwrap());
     owner & 3 == 0 && (0x02000000..=0x0203ffbc).contains(&owner)
 }
+// Recorded EUR victory resource: four rows of sequential outline tiles,
+// paired with the fifteen priority-zero, palette-six OBJ letter pieces.
+// Require both resources; borrowing the dialogue maps alone is insufficient.
+fn victory_letter([a,b,c]:[u16;3])->bool {
+    a==0x0040 && b&0xfe00==0x8000 && c&0xfc00==0x6000
+        && (0x1e0..=0x290).contains(&(c&1023)) && c&15==0
+}
+fn victory_banner(mem:&MemMap)->bool {
+    if !mem.ffta_dialogue.separate || !mem.ffta_movement.europe_profile
+        || (io16(mem,12),io16(mem,14))!=(0x0b08,0x0a08)
+        || io16(mem,0)&0x1c07!=0x1c00 || !ffta_terrain(mem,0){return false;}
+    let expected=[0x1e0,0x1f0,0x200,0x200,0x1f0,0x210,0x220,0x250,0x240,0x260,0x270,0x280,0x260,0x230,0x290];
+    for (slot,tile) in expected.into_iter().enumerate() {
+        let o=&mem.oam[slot*8..slot*8+6];
+        let a=std::array::from_fn(|i|u16::from_le_bytes([o[i*2],o[i*2+1]]));
+        if !victory_letter(a) || a[2]&1023!=tile{return false;}
+    }
+    for y in 0..32 {for x in 0..32 {
+        let o=(y*32+x)*2;
+        let expected=if (8..12).contains(&y) && x<30 {0x60e0+(y-8)*30+x}else{0};
+        if u16::from_le_bytes([mem.vram[0x5800+o],mem.vram[0x5801+o]])!=expected as u16
+            || mem.vram[0x5000+o..0x5002+o]!=[0,0]{return false;}
+    }}true
+}
 fn stats_object([a,_,c]:[u16;3])->bool {
     a&0x2000==0 && a&0x300!=0x200 && (a>>10)&3<=1
         && c&0xc00==0 && matches!(c>>12,11|12) && (0x1c8..0x240).contains(&(c&1023))
@@ -883,9 +932,11 @@ fn begin_dialogue_frame(mem: &mut MemMap) {
     mem.ffta_dialogue.anchor_bounds = None;
     mem.ffta_dialogue.native_bounds=None;
     mem.ffta_dialogue.action_layout=false;
+    mem.ffta_dialogue.law_layout=false;
     mem.ffta_dialogue.naming_layout=false;
     mem.ffta_dialogue.action_banner=None;
     mem.ffta_dialogue.announcement_bounds=None;
+    mem.ffta_dialogue.victory_layout=false;
     mem.ffta_dialogue.confirmation_marker=false;
     mem.ffta_dialogue.action_banner_rotation=0;
     mem.ffta_dialogue.town_layout=false;
@@ -973,7 +1024,9 @@ fn begin_dialogue_frame(mem: &mut MemMap) {
         || io16(mem,0)&0x87!=0 || (!terrain && site_menu.is_none()) {mem.ffta_dialogue.attachment=None;return;}
     mem.ffta_dialogue.service_layout=service;
     if !service {
-        if let Some(bounds)=engagement_bounds(mem) {
+        let victory=victory_banner(mem);
+        if let Some(bounds)=if victory {Some([0,0,240,160])}else{engagement_bounds(mem)} {
+            mem.ffta_dialogue.victory_layout=victory;
             mem.ffta_dialogue.announcement_bounds=Some(bounds);
             mem.ffta_dialogue.native_bounds=Some(bounds);
             mem.ffta_dialogue.anchor_bounds=Some((bounds[1]as usize,bounds[3]as usize));
@@ -1064,7 +1117,9 @@ fn begin_dialogue_frame(mem: &mut MemMap) {
     let action=mem.ffta_dialogue.separate && io16(mem,0)&0xc00!=0
         && io16(mem,0xc)==0x5c08 && io16(mem,0xe)==0x4a09
         && ffta_terrain(mem,0);
-    let notice=mem.ffta_dialogue.separate.then(||notice_bounds(mem)).flatten();
+    let law=mem.ffta_dialogue.separate.then(||battle_law_bounds(mem)).flatten();
+    mem.ffta_dialogue.law_layout=law.is_some();
+    let notice=law.or_else(||mem.ffta_dialogue.separate.then(||notice_bounds(mem)).flatten());
     if !dialogue && !action && !town && !shop && notice.is_none() {
         mem.ffta_dialogue.attachment=None;return;
     }
@@ -1290,7 +1345,7 @@ fn capture_funds_row(mem:&mut MemMap,dispcnt:u16,line:usize) {
 fn dialogue_native_rows(mem:&MemMap,dispcnt:u16,line:usize,used:&[bool;4],world:&[Line;4])->[Line;2] {
     let mut rows=[[TRANSPARENT;MAX_RENDER_WIDTH];2];
     let unscrolled=mem.ffta_dialogue.action_layout || mem.ffta_dialogue.attack_name
-        || mem.ffta_dialogue.announcement_bounds.is_some();
+        || mem.ffta_dialogue.announcement_bounds.is_some() && !mem.ffta_dialogue.victory_layout;
     let width=if mem.ffta_dialogue.attack_name || mem.ffta_dialogue.action_banner_rotation!=0{256}else{240};
     for (i,bg) in [2,3].into_iter().enumerate() {if used[bg] {
         if !mem.ffta_dialogue.reference_dialogue && !unscrolled && width==240 && reusable_native_ui_row(mem,dispcnt,bg,line) {
@@ -1429,6 +1484,12 @@ fn capture_dialogue_part(mem:&mut MemMap, dispcnt:u16, line:usize,
             let in_panel=if mem.ffta_dialogue.naming_layout {true}
             else if speech_capture {contains(mem.ffta_dialogue.service_speech_frame)}
             else if contains(mem.ffta_dialogue.service_speech_frame) {false}
+            // A service content owner spans the whole screen. Give the
+            // separate Notice first ownership of its rectangle so it cannot
+            // also remain embedded in the relocated mission content canvas.
+            else if mem.ffta_dialogue.extra.kind==crate::ffta_dialogue::PanelKind::Notice {
+                contains(mem.ffta_dialogue.extra.bounds)==extra_panel
+            }
             else if !extra_panel && mem.ffta_dialogue.service_list && mem.ffta_dialogue.pub_window_owners[1].is_some() {
                 contains(mem.ffta_dialogue.service_list_bounds)
             }
@@ -1441,8 +1502,21 @@ fn capture_dialogue_part(mem:&mut MemMap, dispcnt:u16, line:usize,
                 let inside=x>=l && x<r && line as i32>=t && (line as i32)<b;
                 inside==extra_panel
             }else{!mem.ffta_dialogue.action_layout || (if extra_panel {x>=160}else{x<160})};
+        // The Pub content frame remains alive behind its Notice. Its top
+        // border is one tile above the Notice and would otherwise become a
+        // detached line after the two canvases are placed independently.
+        let pub_notice_border=!extra_panel && mem.ffta_dialogue.service_layout
+            && mem.ffta_dialogue.service_list
+            && mem.ffta_dialogue.extra.kind==crate::ffta_dialogue::PanelKind::Notice
+            && mem.ffta_dialogue.extra.bounds.is_some_and(|[l,t,r,_]|
+                x>=l && x<r && line as i32>=t-8 && (line as i32)<t)
+            && (0..240).contains(&x) && {
+                let base=((io16(mem,12)>>8)&31)as usize*0x800;
+                let o=base+(line/8*32+x as usize/8)*2;
+                matches!(u16::from_le_bytes([mem.vram[o],mem.vram[o+1]])&0xf3ff,0xc005|0xc006)
+            };
         // Clan Funds has its own fixed canvas throughout service transitions.
-        let in_panel=in_panel && !mem.ffta_dialogue.funds_bg.is_some_and(|_| {
+        let in_panel=in_panel && !pub_notice_border && !mem.ffta_dialogue.funds_bg.is_some_and(|_| {
             mem.ffta_dialogue.funds_bounds.is_some_and(|[l,t,r,b]|
                 x>=l && x<r && line as i32>=t && (line as i32)<b)
         });
@@ -1461,7 +1535,7 @@ fn capture_dialogue_part(mem:&mut MemMap, dispcnt:u16, line:usize,
         // These canvases use unscrolled BG rows or normalized OBJ positions.
         // A WIN rectangle in the old, animated screen coordinates must not
         // crop them a second time after relocation.
-        let canonical_capture=mem.ffta_dialogue.action_layout || mem.ffta_dialogue.attack_name || banner
+        let canonical_capture=mem.ffta_dialogue.victory_layout || mem.ffta_dialogue.action_layout || mem.ffta_dialogue.attack_name || banner
             || extra_panel && mem.ffta_dialogue.extra.kind==crate::ffta_dialogue::PanelKind::Stats;
         if dispcnt&0xe000!=0 {
             control=winout&63;
@@ -4496,7 +4570,9 @@ fn render_sprites_extent(
             }
         }
     });
+    let jp_popup_digit=crate::ffta_rewards::jp_popup_digit(mem);
     for ([a0, a1, a2], coordinates, owner, stats_background, stats_inner_padding) in expanded {
+        let Some([a0,a1,a2])=crate::ffta_rewards::jp_popup_attrs(jp_popup_digit,[a0,a1,a2]) else{continue;};
         // Unused FFTA OAM slots park offscreen at (248,168). Vertical zoom
         // would unwrap that Y coordinate and expose tile zero in the sky.
         // Verified host objects carry full coordinates and are not filtered.
@@ -4590,6 +4666,7 @@ fn render_sprites_extent(
         let bounded=bounded || stats_piece;
         let notice_object=mem.ffta_dialogue.extra.kind==crate::ffta_dialogue::PanelKind::Notice
             && (crate::ffta_dialogue::notice_cursor([a0,a1,a2],x,y,mem.ffta_dialogue.extra.bounds)
+                || mem.ffta_dialogue.law_layout && crate::ffta_dialogue::law_cursor([a0,a1,a2],x,y,mem.ffta_dialogue.extra.bounds)
                 || crate::ffta_dialogue::continuation([a0,a1,a2]));
         let detached_cursor=mem.ffta_dialogue.town_layout && mem.ffta_dialogue.extra.kind==crate::ffta_dialogue::PanelKind::Actions
             && crate::ffta_dialogue::notice_cursor([a0,a1,a2],x,y,mem.ffta_dialogue.extra.bounds);
@@ -4599,7 +4676,7 @@ fn render_sprites_extent(
         let bank_preview=mem.ffta_dialogue.service_list
             && crate::ffta_surface::Descriptor::read(mem).is_some_and(|s|s.id==66)
             && crate::ffta_dialogue::bank_preview([a0,a1,a2]);
-        let main_object=if mem.ffta_dialogue.naming_layout {a2&0xc00<=0x400 && (0x120..0x400).contains(&(a2&1023))}else{mem.ffta_dialogue.announcement_bounds.is_none() && (bank_preview || bounded && !speech_object && !funds_object && !notice_object && !detached_cursor && !split_cursor && !marker_extra && if mem.ffta_dialogue.action_layout {
+        let main_object=if mem.ffta_dialogue.victory_layout {victory_letter([a0,a1,a2])}else if mem.ffta_dialogue.naming_layout {a2&0xc00<=0x400 && (0x120..0x400).contains(&(a2&1023))}else{mem.ffta_dialogue.announcement_bounds.is_none() && (bank_preview || bounded && !speech_object && !funds_object && !notice_object && !detached_cursor && !split_cursor && !marker_extra && if mem.ffta_dialogue.action_layout {
             crate::ffta_dialogue::action_portrait([a0,a1,a2],x,y) || marker
         } else if mem.ffta_dialogue.town_layout || mem.ffta_dialogue.shop_layout {
             counter || (mem.ffta_dialogue.shop_layout && crate::ffta_dialogue::service_object([a0,a1,a2]))
@@ -5790,4 +5867,116 @@ fn ui_backgrounds_hidden(mem:&MemMap,dispcnt:u16,line:usize,used:&[bool;4],windo
         m.iwram[0x27d1]=0;begin_dialogue_frame(&mut m);assert!(!m.ffta_dialogue.naming_layout);
         crate::mem::set_extra(0);crate::mem::set_extra_y(0);
     }
+}
+
+#[cfg(test)]mod pub_confirmation_regression_tests{
+ use super::*;
+ #[test]fn pub_confirmation_saved_state_is_owned_only_by_the_notice_canvas(){
+  let(Ok(rom_path),Ok(state_path))=(std::env::var("FFTA_TEST_ROM"),std::env::var("FFTA_OVERLAY_STATE"))else{println!("Set FFTA_TEST_ROM and FFTA_OVERLAY_STATE to test the doubled confirmation recording");return;};
+  let rom=std::fs::read(rom_path).unwrap();let state=std::fs::read(state_path).unwrap();let mut m=crate::Machine::new(rom.clone());m.load_state(&state).unwrap();
+  crate::mem::set_extra(164);crate::mem::set_extra_y(0);m.bus.ffta_movement.enabled=true;m.bus.ffta_movement.europe_profile=true;
+  let ram=m.bus.ewram.clone();let vram=m.bus.vram.clone();let oam=m.bus.oam.clone();
+  m.bus.ffta_dialogue.separate=false;for y in 0..160{render_scanline(&mut m.bus,y);}let native=m.bus.framebuffer.clone();
+  m.bus.ffta_dialogue.separate=true;for y in 0..160{render_scanline(&mut m.bus,y);}
+  use crate::ffta_dialogue::{LAYER_WIDTH,LAYER_INSET,PanelKind};
+  assert_eq!(m.bus.ffta_dialogue.extra.kind,PanelKind::Notice);assert!(m.bus.ffta_dialogue.service_list);assert!(m.bus.ffta_dialogue.pub_window_owners[1].is_some());
+  let [l,t,r,b]=m.bus.ffta_dialogue.extra.bounds.unwrap();assert_eq!([l,t,r,b],[16,16,224,64]);
+  let node=crate::ffta_ui::Scene::capture(&m.bus.ffta_dialogue).nodes[1].unwrap();
+  assert_eq!(node.anchor,crate::ffta_ui::Anchor::Center,"Pub Notice must share the mission canvas position");
+  let main=m.bus.ffta_dialogue.layer().unwrap().0;let notice=&m.bus.ffta_dialogue.extra.pixels;let mut notice_pixels=0;
+  for y in 8..16{for x in 16..224{assert!(!main[y*LAYER_WIDTH+x+LAYER_INSET as usize].visible(),"detached Pub border at {x},{y}");}}
+  for y in t as usize..b as usize{for x in l as usize..r as usize{
+   let i=y*LAYER_WIDTH+x+LAYER_INSET as usize;assert!(!main[i].visible(),"duplicate notice pixel in main canvas at {x},{y}");
+   if notice[i].visible(){notice_pixels+=1;}
+   let world=m.bus.wide_framebuffer[y*568+x+164];assert_eq!(notice[i].resolve(main[i].resolve(world)),native[y*240+x],"notice differs from native output at {x},{y}");
+  }}assert!(notice_pixels>100);
+  assert!((100..150).any(|y|(20..220).any(|x|main[y*LAYER_WIDTH+x+LAYER_INSET as usize].visible())),"mission content below the modal must remain visible");
+  assert_eq!(m.bus.ewram,ram);assert_eq!(m.bus.vram,vram);assert_eq!(m.bus.oam,oam);assert_eq!(m.bus.rom,rom);
+  println!("Pub confirmation: one Notice canvas, native pixels preserved, mission content retained, game memory unchanged");
+ }
+}
+
+#[cfg(test)]mod battle_law_overlay_tests{
+ use super::*;
+ #[test]fn battle_law_overlay_saved_state_keeps_both_columns_and_cursor(){
+  let(Ok(rom_path),Ok(state_path))=(std::env::var("FFTA_TEST_ROM"),std::env::var("FFTA_LAW_OVERLAY_STATE"))else{println!("Set FFTA_TEST_ROM and FFTA_LAW_OVERLAY_STATE for the clipped law recording");return;};
+  let rom=std::fs::read(rom_path).unwrap();let state=std::fs::read(state_path).unwrap();let mut m=crate::Machine::new(rom.clone());m.load_state(&state).unwrap();
+  crate::mem::set_extra(164);crate::mem::set_extra_y(0);m.bus.ffta_movement.enabled=true;m.bus.ffta_movement.europe_profile=true;
+  assert_eq!(battle_law_bounds(&m.bus),Some([0,72,216,128]));
+  let ram=m.bus.ewram.clone();let vram=m.bus.vram.clone();let oam=m.bus.oam.clone();
+  m.bus.ffta_dialogue.separate=false;for y in 0..160{render_scanline(&mut m.bus,y);}let native=m.bus.framebuffer.clone();
+  m.bus.ffta_dialogue.separate=true;for y in 0..160{render_scanline(&mut m.bus,y);}
+  use crate::ffta_dialogue::{LAYER_WIDTH,LAYER_INSET,PanelKind};assert!(m.bus.ffta_dialogue.law_layout);assert_eq!(m.bus.ffta_dialogue.extra.kind,PanelKind::Notice);
+  let scene=crate::ffta_ui::Scene::capture(&m.bus.ffta_dialogue);let n=scene.nodes[1].unwrap();assert_eq!(n.bounds,[0,72,216,128]);assert_eq!(n.role,crate::ffta_ui::Role::Notice);
+  let main=m.bus.ffta_dialogue.layer().unwrap().0;let panel=&m.bus.ffta_dialogue.extra.pixels;
+  for y in 72..128{for x in 0..216{let i=y*LAYER_WIDTH+x+LAYER_INSET as usize;assert!(!main[i].visible(),"law pixel left in split canvas at {x},{y}");
+   let world=m.bus.wide_framebuffer[y*568+x+164];assert_eq!(panel[i].resolve(world),native[y*240+x],"law panel/cursor changed at {x},{y}");
+  }}
+  assert!((88..120).any(|y|(16..104).any(|x|panel[y*LAYER_WIDTH+x+LAYER_INSET as usize].visible())));
+  assert!((88..120).any(|y|(112..208).any(|x|panel[y*LAYER_WIDTH+x+LAYER_INSET as usize].visible())));
+  assert!((88..104).any(|y|(4..8).any(|x|panel[y*LAYER_WIDTH+x+LAYER_INSET as usize].visible())),"law cursor must stay attached");
+  assert_eq!(m.bus.ewram,ram);assert_eq!(m.bus.vram,vram);assert_eq!(m.bus.oam,oam);assert_eq!(m.bus.rom,rom);
+  println!("Battle law overlay: full Forbidden/Recommend frame and cursor match native pixels; guest memory unchanged");
+ }
+}
+
+#[cfg(test)]mod battle_law_overlay_deployment_tests{
+ use super::*;
+ #[test]fn battle_law_overlay_deployment_frame_cursor_and_hud_are_complete(){
+  let(Ok(rom_path),Ok(state_path))=(std::env::var("FFTA_TEST_ROM"),std::env::var("FFTA_DEPLOYMENT_LAW_STATE"))else{println!("Set FFTA_TEST_ROM and FFTA_DEPLOYMENT_LAW_STATE for the deployment law recording");return;};
+  let rom=std::fs::read(rom_path).unwrap();let state=std::fs::read(state_path).unwrap();let mut m=crate::Machine::new(rom.clone());m.load_state(&state).unwrap();
+  crate::mem::set_extra(164);crate::mem::set_extra_y(0);m.bus.ffta_movement.enabled=true;m.bus.ffta_movement.europe_profile=true;
+  assert_eq!(battle_law_bounds(&m.bus),Some([16,48,232,88]));let ram=m.bus.ewram.clone();let vram=m.bus.vram.clone();let oam=m.bus.oam.clone();
+  m.bus.ffta_dialogue.separate=false;for y in 0..160{render_scanline(&mut m.bus,y);}let native=m.bus.framebuffer.clone();
+  m.bus.ffta_dialogue.separate=true;for y in 0..160{render_scanline(&mut m.bus,y);}
+  use crate::ffta_dialogue::{LAYER_WIDTH,LAYER_INSET,PanelKind};assert!(m.bus.ffta_dialogue.law_layout);assert!(m.bus.ffta_dialogue.battle_notice());assert_eq!(m.bus.ffta_dialogue.extra.kind,PanelKind::Notice);
+  let scene=crate::ffta_ui::Scene::capture(&m.bus.ffta_dialogue);assert!(scene.nodes[0].is_none(),"deployment unit HUD must be suspended");assert_eq!(scene.nodes[1].unwrap().bounds,[16,48,232,88]);
+  let main=m.bus.ffta_dialogue.layer().unwrap().0;let panel=&m.bus.ffta_dialogue.extra.pixels;
+  for y in 48..88{for x in 16..232{let i=y*LAYER_WIDTH+x+LAYER_INSET as usize;assert!(!main[i].visible(),"law panel leaked into HUD at {x},{y}");let world=m.bus.wide_framebuffer[y*568+x+164];assert_eq!(panel[i].resolve(world),native[y*240+x],"deployment law/cursor changed at {x},{y}");}}
+  assert!((64..80).any(|y|(18..26).any(|x|panel[y*LAYER_WIDTH+x+LAYER_INSET as usize].visible())),"deployment yellow cursor must stay attached");
+  assert_eq!(m.bus.ewram,ram);assert_eq!(m.bus.vram,vram);assert_eq!(m.bus.oam,oam);assert_eq!(m.bus.rom,rom);
+  println!("Deployment laws: full frame and cursor match native pixels; unit HUD suspended; guest memory unchanged");
+ }
+}
+
+#[cfg(test)]mod victory_banner_tests {
+ use super::*;
+ #[test]fn victory_banner_letter_family_excludes_actors_and_other_ui(){
+  assert!(victory_letter([0x40,0x8000,0x61e0]));
+  for a in [[0x40,0x8000,0x11e0],[0x40,0x8000,0x65e0],[0x140,0x8000,0x61e0],[0x40,0x8000,0x61e1],[0x40,0x8000,0x62a0],[0x40,0x4000,0x61e0]]{assert!(!victory_letter(a));}
+ }
+ #[test]fn victory_banner_recorded_letters_and_outline_share_native_pixels(){
+  let rom_path=std::env::var("FFTA_TEST_ROM").expect("Set FFTA_TEST_ROM for the recorded victory test");
+  let state_path=std::env::var("FFTA_VICTORY_STATE").expect("Set FFTA_VICTORY_STATE to the victory recording");
+  let rom=std::fs::read(rom_path).unwrap();let state=std::fs::read(state_path).unwrap();
+  let mut m=crate::Machine::new(rom.clone());m.load_state(&state).unwrap();
+  crate::mem::set_extra(164);crate::mem::set_extra_y(0);
+  m.bus.ffta_movement.enabled=true;m.bus.ffta_movement.europe_profile=true;m.bus.ffta_dialogue.separate=true;
+  let (ram,vram,oam)=(m.bus.ewram.clone(),m.bus.vram.clone(),m.bus.oam.clone());
+  assert!(victory_banner(&m.bus),"recording must contain the verified victory resource pair");
+  // A map or letter mismatch must fail closed, even with the same registers.
+  m.bus.vram[0x5a00]^=1;assert!(!victory_banner(&m.bus));m.bus.vram[0x5a00]^=1;
+  m.bus.oam[4]^=1;assert!(!victory_banner(&m.bus));m.bus.oam[4]^=1;
+  for y in 0..160{render_scanline(&mut m.bus,y);}
+  assert!(m.bus.ffta_dialogue.victory_layout);
+  let scene=crate::ffta_ui::Scene::capture(&m.bus.ffta_dialogue);let n=scene.nodes[0].unwrap();
+  assert_eq!(n.role,crate::ffta_ui::Role::Notice);assert!(crate::ffta_ui_window::presentation(&m.bus,n,None).is_none());
+  use crate::ffta_dialogue::{LAYER_WIDTH,LAYER_INSET};
+  let mut visible=0;
+  for y in 64..96{for x in 0..240{
+   let i=y*LAYER_WIDTH+x+LAYER_INSET as usize;let p=m.bus.ffta_dialogue.pixels[i];
+   if p.visible(){visible+=1;}
+   let world=m.bus.wide_framebuffer[y*568+x+164];
+   assert_eq!(p.resolve(world),m.bus.framebuffer[y*240+x],"victory reconstruction differs at {x},{y}");
+  }}assert!(visible>1500,"both letter and outline pixels must be captured");
+  // Render OBJ ownership independently: no victory glyph may remain in the world.
+  let mut objects=[OBJ_EMPTY;MAX_RENDER_WIDTH];let mut windows=[false;MAX_RENDER_WIDTH];
+  m.bus.ffta_dialogue.wide_pass=true;
+  for y in 64..96{objects.fill(OBJ_EMPTY);render_sprites_extent(&m.bus,io16(&m.bus,0),y,&mut objects,&mut windows,164,568);
+   assert!(objects.iter().all(|p|p.priority!=0),"victory glyph leaked into world row {y}");}
+  m.bus.ffta_dialogue.wide_pass=false;
+  assert_eq!(m.bus.ewram,ram);assert_eq!(m.bus.vram,vram);assert_eq!(m.bus.oam,oam);assert_eq!(m.bus.rom,rom);
+  crate::mem::set_extra(0);crate::mem::set_extra_y(0);
+  println!("Victory letters and outline share one canvas; native pixels match; no glyph remains in world; guest memory unchanged");
+ }
 }

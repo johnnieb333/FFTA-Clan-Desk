@@ -1,193 +1,80 @@
-<p align="center">
-  <img src="Image/logo.png" alt="FFTARecomp logo" width="50%">
-</p>
+# FFTA Clan Desk
 
-<h1 align="center">FFTARecomp</h1>
+A Windows beta of **FFTARecomp** with an integrated clan editor, a new Clan Desk menu, manual save states and a browsable timed-autosave history.
 
-<p align="center">
-  <b>Final Fantasy Tactics Advance, running natively on your Windows PC, Linux PC, Steam Deck or Android.</b><br>
-  Widescreen, video and audio options, and a one-click installer.
-</p>
+**Independently maintained by [Johnnie Barton](https://github.com/johnnieb333).**
+Forked from [Jorge262007/FFTARecomp](https://github.com/Jorge262007/FFTARecomp), built on [JRickey/gba-recomp](https://github.com/JRickey/gba-recomp). Original authors, licences and third-party notices are retained.
 
-<p align="center">
-  <a href="https://github.com/Jorge262007/FFTARecomp/releases"><img src="https://img.shields.io/github/v/release/Jorge262007/FFTARecomp?include_prereleases&label=release" alt="Release"></a>
-  <img src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20Linux%20%7C%20Steam%20Deck%20%7C%20Android-blue" alt="Platforms">
-  <img src="https://img.shields.io/badge/built%20with-Rust-orange" alt="Rust">
-</p>
+## Windows beta scope
 
----
+The intended first release is **v0.1.0-beta** for **Windows x86_64**. The editor and new UI have been tested with the European FFTA ROM. The beta launcher verifies that ROM before starting. Other platforms and regions are not claimed as tested for these additions.
 
-## ✨ What is this?
+No ROM, BIOS, save, extracted game artwork or generated game translation is included in release packages. The player supplies the ROM. Character sprites are decoded from it at runtime and cached in memory.
 
-**FFTARecomp** turns *Final Fantasy Tactics Advance* into a native program for Windows, Linux, Steam Deck and Android. Instead of running in an emulator, the game is recompiled from your own ROM, so it runs smoothly, needs no BIOS, and gets modern options. It is based on [gba-recomp](https://github.com/JRickey/gba-recomp) by JRickey.
+## Additions in this fork
 
-## 🆕 What's new in v3.1
+- Clan Desk pause menu and roster, with actual character/job sprites and readable controls.
+- Base-stat and level editing, staged previews, confirmation and full-state Undo Last Edit.
+- Visible Game-possible / Unrestricted stat modes. Unrestricted has x1/x2/x5 adjustment steps; mouse-holding repeats steadily.
+- Job changes that unequip all five items while preserving inventory counts; Undo restores the prior state.
+- Individual ability AP, selected-job mastery and staged mastery of all jobs for a character's race.
+- Clan Funds editor with clear current/new totals, visible increments and confirmation.
+- Inventory search and filters, individual quantities, batch edits and Add All Unowned with quantities 1-10.
+- 30 independent manual save-state slots, screenshots and recovery controls.
+- 10 rotating timed autosaves, screenshot browser, load confirmation and Undo Load.
+- Autosave timer: Off, 1, 2, 5 or 10 minutes, default 5. It counts active play and waits for a recognized gameplay scene before writing.
+- Existing QuickSave remains separate and accessible through the browser.
+- Reward multipliers, shop-stock controls, law-penalty option, renaming and character cloning.
+- Targeted dialogue, law-panel and mission-result alignment fixes.
 
-- 🕹️ **Steam Deck:** the port menu now opens with **Y**.
-- 📱 **Much better mouse and touch support on Android.** Most of the game is now playable with this mode.
-- 📜 **Scrollbars** were added so menus are more comfortable to use with the mouse and touch.
-- 💾 **Reworked save system.**
-  - The game now creates an **auto save every 5 seconds**, so you can close the game at any time, anywhere, without losing progress.
-  - The slot limit of the base game was raised: you can now have **more than 2 save slots**.
-- ⏩ **New x1.5 speed** for fast forward.
-- 🖥️ **Menus redesigned for widescreen**, without black borders, repeating the gradient patterns of the game's own textures.
-  - Please keep in mind that the menu background is just an image, and stretching the render area doesn't magically extend everything in the menu. This is my best effort to widen it; a better option would be to recreate the artwork from scratch, but I don't have much artistic experience.
-- 🔍 **Smooth zoom:** zooming in and out is now animated instead of instant, and some UI elements that didn't scale with zoom out now do.
-- 💬 **Visual bugs fixed** related to text bubbles.
-- 🎞️ **Visual bugs fixed** related to the enter and exit animations of the menus, plus other visual fixes.
+## Run the beta
 
-## 🎮 Features
+Extract the complete Windows archive into a writable folder. Open **FFTA-Clan-Desk.exe** and choose your European FFTA ROM if prompted. Keep recomp.exe, gamedb.sqlite and the tcc folder beside the launcher. Players do not need Python, Rust or GCC when using the complete packaged build.
 
-- 🤖 **Native Android version,** with touch support that works like the PC mouse support. To enable it, go to **Input > Touchscreen > Touch Controls**.
-- 🖱️ **Mouse support:** it doesn't cover the whole game yet, but support keeps expanding. To enable it, go to **Input > Mouse and Keyboard** and turn it on. On Windows, mouse mode comes with its own remappable layout that doesn't affect the keyboard controls.
-- ⚡ **Lightweight install:** the install size is only about 11 MB (it used to be roughly 800 MB), and compile time is about 4 seconds (it used to be roughly 120 seconds).
-- 💬 **Fully reworked game UI and editable text bubbles:** the **Text Bubbles** option in the Settings menu lets you adjust their length and size in-game.
-- 🇪🇺 **European ROM support.** Saves are compatible between regions.
-- 🖥️ **Widescreen:** Auto, 16:10, 16:9 (default), 20:9, 21:9 and 32:9.
-- 🔍 **Zoom in and out.**
-- 🎨 **Video options:** screen model, grid, scaling and vsync.
-- 🔊 **Audio options** and volume control.
-- 🔊 **Normal audio mode:** the game fast-forwards while the audio keeps playing at normal speed.
-- ⏩ **Fast forward.**
-- 🎛️ **Completely redesigned menu.**
-- 🎮 **Gamepad support** (reworked generic XInput).
-- 🐧 **Native Linux version.**
-- 🕹️ **Steam Deck support,** with a dedicated installer (the Linux installer also works).
-- 🛠️ **Reworked installer** and a **one-click installer:** pick your ROM and you're done.
-- 🚫 **No console BIOS needed.**
+Esc opens Clan Desk. Clan & Editor contains the editing tools; Saves contains Manual and Autosaves tabs. Character and inventory editing requires the world map. Equip items and assign learned abilities through the game's own menus.
 
-## 🕹️ Controls
+| Key | Action |
+| --- | --- |
+| Esc | Open/close Clan Desk |
+| F5 | Save selected manual slot; confirm overwriting |
+| F6 / F7 | Next / previous manual slot |
+| F10 | Load selected manual slot |
+| F4 | Undo the last state load |
 
-> 💡 To open the **Options Menu**, press **Esc** while in-game.
+Editor changes are staged until Apply and confirmation. Right-click is ignored in paused menus; use Esc or Back to return. Some in-game stat/funds displays refresh after changing screens.
 
-| PC | Game Boy Advance |
-|----|------------------|
-| Z | A |
-| X | B |
-| A | L |
-| S | R |
-| Enter | Start |
-| Right Shift | Select |
-| Up Arrow | Up |
-| Down Arrow | Down |
-| Left Arrow | Left |
-| Right Arrow | Right |
-| Tab | Fast Forward |
-| + | Zoom in |
-| - | Zoom out |
+## Save compatibility and limits
 
-Controls can be remapped from the Options Menu.
+Existing FFTARecomp data-directory and save names are retained for compatibility. The launcher remembers a ROM path under Local AppData/FFTA-Clan-Desk; it does not copy the ROM. Existing save-path selection remains in effect. Timed history is stored under AutoStates in the active saves directory, separate from ManualStates and QuickSave.
 
-## 🎮 Gamepad default
+Manual states are tied to ROM and BIOS identity. Cartridge saves and full-machine states are different formats; a general-purpose direct state-to-cartridge converter is not included.
 
-| Gamepad | Action |
-|---------|--------|
-| A | GBA A |
-| B | GBA B |
-| LT | GBA L |
-| RT | GBA R |
-| LB | Zoom out |
-| RB | Zoom in |
-| Left stick click | Hold Fast Forward |
-| Right stick click | Toggle Fast Forward |
-| Start / Menu | Start |
-| Back / View | Select |
-| D-pad or left stick | Move |
-| Guide | Options Menu |
-| Y (Steam Deck) | Port menu |
+Game-possible limits are a **per-stat recruitment plus level-growth envelope**, not proof that every displayed maximum can be achieved together. They exclude boosts and repeated level-down cycles. Estimated level reductions cannot reconstruct unrecorded job history or random rolls.
 
-## ⏩ Fast forward modes
+This is a beta. Test edited progress using separate saves. The release checklist records outstanding clean-package and gameplay checks: [docs/CLAN-DESK-RELEASE-CHECKLIST.md](docs/CLAN-DESK-RELEASE-CHECKLIST.md).
 
-| Mode | Behavior |
-|------|----------|
-| Silent | No audio (default) |
-| Fast audio | Audio speed follows the fast forward speed |
-| Normal | Audio keeps playing at normal speed |
+## Build
 
-## 💬 Text Bubbles
-
-| Option | Behavior |
-|--------|----------|
-| Manual length | Changes the length of the text bubbles |
-| Size | Changes the size of the text bubbles |
-
-## 🚀 Installation
-
-### Windows
-
-1. Download `FFTARecomp-windows-x86_64.zip` from [Releases](https://github.com/Jorge262007/FFTARecomp/releases) and extract it.
-2. Run `FFTARecomp.exe`, choose your ROM and press **Recompile & Install**.
-3. Wait for the five steps to finish, then press **Play**. ▶️
-
-### Linux / Steam Deck
-
-Download `FFTARecomp-linux-x86_64.tar.gz` from [Releases](https://github.com/Jorge262007/FFTARecomp/releases) and run:
+See [BUILDING.md](BUILDING.md) for the inherited toolchain requirements. The Windows development build uses:
 
 ```bash
-mkdir -p FFTARecomp-linux && tar -xzf FFTARecomp-linux-x86_64.tar.gz -C FFTARecomp-linux && cd FFTARecomp-linux && ./FFTAInstaller
+cargo build --release -p recomp -p ffta-play -j 2
+python TinyCC/build.py --cc gcc
 ```
 
-On Steam Deck, run it from Desktop Mode.
+After committing the reviewed source, create a Windows package with:
 
-### Android
-
-1. Download `FFTARecomp-android-arm64.apk` from [Releases](https://github.com/Jorge262007/FFTARecomp/releases).
-2. Tap the downloaded file and press **Install**. If Android asks, allow installing apps from this source.
-3. Open the app and choose your ROM.
-
-> 💡 You need your own copy of *Final Fantasy Tactics Advance*. This project does not include any game data.
-
-## 🔨 Building from source
-
-You need [Rust](https://rustup.rs) and Windows PowerShell. Then run a single script from the repo root:
-
-```powershell
-git clone https://github.com/Jorge262007/FFTARecomp.git
-cd FFTARecomp
-.\build-all.ps1
+```bash
+python scripts/package_clan_desk.py
 ```
 
-The script does everything in order:
+The packaging script includes only listed runtime files, licence notices and the matching TinyCC source. It excludes local ROMs, saves, research reports, dumps and generated game libraries.
 
-1. Builds the whole workspace (`cargo build --release`).
-2. Builds the installer (`cargo build --release -p installer`).
-3. Copies `installer.exe` into `Installer\`, next to the static `payload` folder.
-4. Downloads the compiler toolchain ([w64devkit](https://github.com/skeeto/w64devkit) 2.10.0) into `Installer\payload\toolchain`, only if it is missing.
+## Credits and licences
 
-When it finishes, the final installer is in:
+- **Jorge.R / Jorge262007 and contributors:** upstream FFTARecomp.
+- **JRickey and contributors:** gba-recomp foundation and function metadata.
+- **Johnnie Barton:** FFTA Clan Desk fork and its development/testing, with AI assistance.
+- See [Licenses/CREDITS.md](Licenses/CREDITS.md), [Licenses/LICENSE](Licenses/LICENSE), and [Licenses/THIRD_PARTY_NOTICES.md](Licenses/THIRD_PARTY_NOTICES.md) for retained notices and component licences. TinyCC source and replacement instructions are included separately.
 
-```
-FFTARecomp\Installer\
-```
-
-If PowerShell blocks the script, run it with:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build-all.ps1
-```
-
-To force a fresh toolchain download, delete `Installer\payload\toolchain` and run the script again.
-
-> ⏱️ The first build can take several minutes.
-
-## ⚠️ Good to know
-
-- ⚠️ The USA version of the game is temporarily not supported with the new changes. Your saves are compatible between regions, so there should be no problems: you only need to switch to the European ROM.
-- 🚧 This is a work in progress.
-
-> ### 🛡️ Windows or your antivirus shows a warning?
-> **The executables are not code-signed**, so Windows SmartScreen or your antivirus may show a warning. Click **More info → Run anyway**, or right-click the `.zip` → Properties → tick **Unblock** before extracting.
->
-> If you have any doubts, you can check the **VirusTotal report** included in each release.
-
-## 📜 License and credits
-
-- License: MIT, see [LICENSE](LICENSE). It keeps the original author's copyright line.
-- Based on [gba-recomp](https://github.com/JRickey/gba-recomp) by JRickey (MIT OR Apache-2.0).
-- `gamedb.sqlite` is by JRickey, released under CC0 1.0.
-- Includes [w64devkit](https://github.com/skeeto/w64devkit) (GCC, binutils and other tools under GPL and compatible licenses), unmodified. Their licenses are in `payload/toolchain`.
-- *Final Fantasy Tactics Advance* is owned by Square Enix / Nintendo. This project is not affiliated with them and does not distribute ROMs or copyrighted game data.
-
----
-
-<p align="center">Made by a fan, for fans.</p>
+Final Fantasy Tactics Advance and related names belong to their respective rightsholders. This fan project is not affiliated with Square Enix or Nintendo. The software licences do not grant rights to the game.

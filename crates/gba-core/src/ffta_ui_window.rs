@@ -70,6 +70,10 @@ pub fn pub_root(mem:&MemMap,cached:Option<usize>)->Option<Window>{pub_windows(me
 /// Unknown panels fall back to visibility; no guest input/state is changed.
 pub fn presentation(mem:&MemMap,node:crate::ffta_ui::Node,cached:Option<usize>)->Option<(usize,Phase)> {
     use crate::ffta_ui::Role;
+    // The law viewer is a BG resource panel, not a text-window owner.
+    // Deployment retains a closed Begin battle? constructor at overlapping
+    // coordinates. Borrowing it makes this live panel immediately slide out.
+    if (mem.ffta_dialogue.law_layout || mem.ffta_dialogue.victory_layout) && node.role==Role::Notice{return None;}
     let family=match node.role {
         Role::ServiceMenu=>Some((0x0180,0x0c20,0x00010005)),
         Role::ServiceContent if mem.ffta_dialogue.service_list=>Some((0x00c0,0x0c20,0x00010005)),
@@ -204,4 +208,32 @@ pub fn presentation(mem:&MemMap,node:crate::ffta_ui::Node,cached:Option<usize>)-
         m.ewram[o+24..o+28].fill(0);
         assert!(presentation(&m,n,Some(o)).is_none());
     }
+}
+
+#[cfg(test)]mod battle_law_lifecycle_tests{
+ use super::*;
+ #[test]fn battle_law_lifecycle_ignores_closed_deployment_notice_even_when_cached(){
+  let mut m=MemMap::new(vec![]);let o=0x1000;
+  for(p,v)in[(12,0x5c08u16),(14,0x4a09)]{m.io[p..p+2].copy_from_slice(&v.to_le_bytes());}
+  for(p,v)in[(o,0x0600e000u32),(o+4,0x06005000),(o+24,0x0003000d)]{m.ewram[p..p+4].copy_from_slice(&v.to_le_bytes());}
+  m.ewram[o+16..o+20].copy_from_slice(&[2,2,26,6]);
+  for(p,v)in[(o+20,0x0800u16),(o+22,0x0b20)]{m.ewram[p..p+2].copy_from_slice(&v.to_le_bytes());}
+  let n=crate::ffta_ui::Node{slot:1,role:crate::ffta_ui::Role::Notice,anchor:crate::ffta_ui::Anchor::Modal,bounds:[16,48,232,88],length:false};
+  assert_eq!(presentation(&m,n,None),Some((o,Phase::Hidden)),"fixture must reproduce the stale overlapping owner");
+  m.ffta_dialogue.law_layout=true;
+  for cached in[None,Some(o)]{assert_eq!(presentation(&m,n,cached),None,"law visibility must not follow the old Notice phase");}
+  m.ffta_dialogue.law_layout=false;assert_eq!(presentation(&m,n,Some(o)),Some((o,Phase::Hidden)),"ordinary notices retain native lifecycle tracking");
+ }
+ #[test]fn battle_law_lifecycle_recorded_panel_stays_open_across_owner_rescans(){
+  let(Ok(rom_path),Ok(state_path))=(std::env::var("FFTA_TEST_ROM"),std::env::var("FFTA_DEPLOYMENT_LAW_STATE"))else{return;};
+  let rom=std::fs::read(rom_path).unwrap();let state=std::fs::read(state_path).unwrap();let mut m=crate::Machine::new(rom);m.load_state(&state).unwrap();
+  crate::mem::set_extra(164);crate::mem::set_extra_y(0);m.bus.ffta_movement.enabled=true;m.bus.ffta_movement.europe_profile=true;m.bus.ffta_dialogue.separate=true;
+  let ram=m.bus.ewram.clone();let mut stale=None;
+  for frame in 0..17{m.bus.frames=frame;for y in 0..160{crate::ppu::render_scanline(&mut m.bus,y);}
+   assert!(m.bus.ffta_dialogue.law_layout);let n=crate::ffta_ui::Scene::capture(&m.bus.ffta_dialogue).nodes[1].unwrap();
+   if frame==0{m.bus.ffta_dialogue.law_layout=false;stale=presentation(&m.bus,n,None).map(|(owner,phase)|{assert_eq!(phase,Phase::Hidden);owner});assert!(stale.is_some());m.bus.ffta_dialogue.law_layout=true;}
+   assert!(presentation(&m.bus,n,stale).is_none(),"stale lifecycle borrowed at frame {frame}");
+   assert!(m.bus.ffta_dialogue.extra.pixels.iter().any(|p|p.visible()));
+  }assert_eq!(m.bus.ewram,ram);println!("Recorded deployment law panel retains visibility across cached-owner and periodic-rescan paths");
+ }
 }

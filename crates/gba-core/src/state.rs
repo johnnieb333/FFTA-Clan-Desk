@@ -111,6 +111,7 @@ impl Machine {
         let mut body = Vec::with_capacity(600_000);
         self.cpu.put(&mut body);
         self.bus.put_hardware(&mut body);
+        self.bus.ffta_names.append_extension(&mut body);
         let mut out = b"FFTAST01".to_vec();
         out.extend_from_slice(&Sha256::digest(&self.bus.rom));
         out.extend_from_slice(&Sha256::digest(&self.bus.bios));
@@ -138,9 +139,7 @@ impl Machine {
         };
         let cpu = Cpu::get(&mut r)?;
         let hardware = HardwareState::get(&mut r)?;
-        if r.pos != body.len() {
-            return Err("trailing state data".into());
-        }
+        let names=crate::ffta_names::NameBank::from_extension(&body[r.pos..])?;
         hardware.validate()?;
         if !matches!(
             cpu.cpsr & 31,
@@ -150,6 +149,7 @@ impl Machine {
         }
         self.cpu = cpu;
         self.bus.apply_hardware(hardware);
+        self.bus.ffta_names=names;
         self.decode_cache = Default::default();
         Ok(())
     }
@@ -215,9 +215,7 @@ pub fn preview(data: &[u8]) -> Result<(Vec<u8>, Vec<u16>), String> {
     };
     let _ = Cpu::get(&mut r)?;
     let hardware = HardwareState::get(&mut r)?;
-    if r.pos != body.len() {
-        return Err("trailing state data".into());
-    }
+    crate::ffta_names::NameBank::from_extension(&body[r.pos..])?;
     hardware.validate()?;
     Ok((hardware.ewram, hardware.framebuffer))
 }

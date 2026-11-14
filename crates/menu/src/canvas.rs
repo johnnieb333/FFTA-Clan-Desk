@@ -56,6 +56,7 @@ impl Canvas {
         bottom: [u8; 3],
         border: [u8; 3],
     ) {
+        let top=clan_color(top);let bottom=clan_color(bottom);let border=clan_color(border);
         if w <= 0. || h <= 0. {
             return;
         }
@@ -111,6 +112,13 @@ impl Canvas {
         self.path(p.finish().unwrap(), c, width);
     }
     pub fn text(&mut self, x: f32, y: f32, s: &str, c: [u8; 3], size: f32, title: bool, max: f32) {
+        let mut c=clan_color(c);
+        // Text on teal selection panels needs a light foreground on every page.
+        let xx=(x+2.).max(0.)as usize;let yy=(y+size*0.5).max(0.)as usize;
+        if xx<self.pix.width()as usize&&yy<self.pix.height()as usize{
+            let at=(yy*self.pix.width()as usize+xx)*4;let bg=&self.pix.data()[at..at+3];
+            if c==[62,34,53]&&bg[0]<80&&bg[1]>80&&bg[2]>60{c=[255,251,238];}
+        }
         static BODY: OnceLock<FontRef<'static>> = OnceLock::new();
         static TITLE: OnceLock<FontRef<'static>> = OnceLock::new();
         let font = if title {
@@ -162,4 +170,16 @@ impl Canvas {
             last = Some(id);
         }
     }
+}
+
+fn clan_color(c:[u8;3])->[u8;3]{match c{
+ [35,24,16]=>[62,34,53],
+ [235,220,185]|[237,219,169]|[232,216,176]=>[239,226,202],
+ [184,146,65]|[208,184,136]=>[99,59,80],
+ [255,231,158]|[59,40,24]=>[38,129,119],
+ [242,208,123]|[24,15,9]=>[27,106,100],
+ _=>c}}
+#[cfg(test)]mod clan_theme_canvas_tests{
+ use super::*;
+ #[test]fn clan_theme_selected_text_has_light_contrast(){let px=vec![[0,0,0,255];200*60];let mut c=Canvas::new(&px,200,60);c.rect(0.,0.,200.,60.,0.,[255,231,158],[242,208,123],[184,146,65]);c.text(10.,10.,"Apply changes",[35,24,16],20.,false,180.);assert!(c.pix.data().chunks_exact(4).any(|p|p[0]>220&&p[1]>220&&p[2]>220));}
 }

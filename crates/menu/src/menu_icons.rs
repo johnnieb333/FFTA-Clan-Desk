@@ -12,6 +12,15 @@ pub(super) fn draw(c: &mut Canvas, row: Row, x: f32, y: f32, scale: f32, ink: [u
     };
     let mut p = PathBuilder::new();
     match row {
+        Row::SaveStatesMenu => {
+            p.move_to(4.,3.); p.line_to(18.,3.); p.line_to(21.,6.);
+            p.line_to(21.,21.); p.line_to(3.,21.); p.line_to(3.,3.); p.close();
+            paint(p,false);
+            let mut q=PathBuilder::new();
+            q.move_to(8.,3.);q.line_to(8.,9.);q.line_to(16.,9.);q.line_to(16.,3.);
+            q.move_to(7.,21.);q.line_to(7.,14.);q.line_to(17.,14.);q.line_to(17.,21.);
+            paint(q,false);
+        }
         Row::Resume => {
             p.move_to(8., 4.7);
             p.quad_to(6.5, 3.8, 6.5, 5.6);

@@ -129,6 +129,9 @@ impl Machine {
         self.ffta_visibility_entry();
         self.ffta_sprite_entry();
         self.ffta_log_instruction(self.cpu.regs[15], false);
+        crate::ffta_rewards::before_instruction(self);
+        crate::ffta_shop_stock::before_instruction(self);
+        crate::ffta_laws::before_instruction(self);
         // MP2K HLE: PC landing on SoundMainRAM means the track engine
         // has finalized this tick's channel state — snapshot it for the
         // shadow mixer (read-only; the guest mixer still runs).

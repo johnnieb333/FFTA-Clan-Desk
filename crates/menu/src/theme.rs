@@ -1,7 +1,7 @@
 //! Native, scalable parchment UI. No HTML engine or game assets.
 use super::canvas::Canvas;
 use super::*;
-const GOLD: [u8; 3] = [255, 197, 51];
+const GOLD: [u8; 3] = [38, 129, 119];
 const BRASS: [u8; 3] = [184, 146, 65];
 const INK: [u8; 3] = [35, 24, 16];
 const LIGHT: [u8; 3] = [254, 252, 245];
@@ -36,6 +36,24 @@ fn binding_value(
     zout: &str,
 ) -> Option<String> {
     match row {
+        Row::RenameMenu=>return Some(if menu.characters.rename_allowed(){">"}else{"Locked"}.into()),
+        Row::RenameCurrent=>return Some(menu.characters.expected.as_ref().map(|r|r.name.clone()).unwrap_or("--".into())),
+        Row::RenameValue=>return Some(format!("{}{}",menu.characters.proposed,if menu.characters.editing{"_"}else{""})),
+        Row::LawValue=>return Some(if menu.law_mode==0{"Normal"}else{"No penalties"}.into()),
+        Row::ShopValue=>return Some(["Game default","Early (levels 1-9)","Middle (levels 10-19)","Late (levels 20+)"][menu.shop_tier.min(3)as usize].into()),
+        Row::CharacterMember=>return Some(menu.characters.current().map(|r|format!("{} ({}/{})",r.name,menu.characters.selected+1,menu.characters.rows.len())).unwrap_or("--".into())),
+        Row::CharacterRace=>return Some(menu.characters.current().map(|r|r.race.to_string()).unwrap_or("--".into())),
+        Row::CharacterJob=>return Some(menu.characters.current().map(|r|r.job.to_string()).unwrap_or("--".into())),
+        Row::CharacterLevel=>return Some(menu.characters.current().map(|r|r.level.to_string()).unwrap_or("--".into())),
+        Row::CharacterExp=>return Some(menu.characters.current().map(|r|r.exp.to_string()).unwrap_or("--".into())),
+        Row::CharacterJp=>return Some(menu.characters.current().map(|r|r.jp.to_string()).unwrap_or("--".into())),
+        Row::ItemTotal=>return Some(if menu.items.enabled {menu.items.current.to_string()} else {"--".into()}),
+        Row::ItemEquipped=>return Some(if menu.items.enabled {menu.items.equipped.to_string()} else {"--".into()}),
+        Row::ItemValue=>return Some(if menu.items.enabled {menu.items.proposed.to_string()} else {"--".into()}),
+        Row::GilCurrent=>return Some(if menu.gil.enabled {menu.gil.current.to_string()} else {"--".into()}),
+        Row::GilValue=>return Some(if menu.gil.enabled {menu.gil.proposed.to_string()} else {"--".into()}),
+        Row::GilStep=>return Some(menu.gil.step().to_string()),
+        Row::GilUndo=>return Some(if menu.gil.undo_available {"Available"} else {"None"}.into()),
         Row::MenuKey => {
             return Some(
                 if menu.capture
@@ -148,11 +166,11 @@ pub(super) fn draw(
     }
     let mut c = Canvas::new(px, w, h);
     let rows = rows_of(menu.page);
-    let l = layout(rows.len(), w, h);
+    let l = page_layout(menu.page,w,h);
     let first = menu.first_visible(l);
     let scale = l.line_h as f32 / 44.;
-    let fs = 16. * scale;
-    let title = 18. * scale;
+    let fs = 18. * scale;
+    let title = 22. * scale;
     let (x, y, pw, ph, pad) = (
         l.panel_x as f32,
         l.panel_y as f32,
@@ -183,6 +201,17 @@ pub(super) fn draw(
     );
     if menu.page != Page::Main {
         let label = match menu.page {
+            Page::ItemEditor => "FEATHER CAP (TEST)",
+            Page::ItemConfirm => "APPLY ITEM QUANTITY?",
+            Page::CharacterRename=>"RENAME MEMBER",
+            Page::CharacterRenameConfirm=>"RENAME MEMBER?",
+            Page::Laws=>"LAWS",
+            Page::ShopStock=>"SHOP STOCK",
+            Page::Characters=>"CHARACTERS",
+            Page::Editor => "CLAN DESK / EDITOR",
+            Page::GilEditor => "GIL",
+            Page::GilConfirm => "APPLY GIL CHANGE?",
+            Page::GilUndoConfirm => "UNDO LAST EDIT?",
             Page::Debug => "DEVELOPER TOOLS (EUR)",
 
             Page::Exit => "QUIT GAME?",
@@ -202,6 +231,43 @@ pub(super) fn draw(
             BRASS,
             scale,
         );
+    }
+    if menu.page==Page::ItemEditor {
+        c.text(x+pad,y+pad+38.*scale,&menu.items.status,INK,14.*scale,false,pw-pad*2.);
+        c.text(x+pad,y+pad+60.*scale,"Left/Right: adjust. Mouse: left + / right -",INK,14.*scale,false,pw-pad*2.);
+    }
+    if menu.page==Page::ItemConfirm {
+        let message=format!("{} -> {} total; {} equipped stays unchanged.",menu.items.current,menu.items.proposed,menu.items.equipped);
+        c.text(x+pad,y+pad+40.*scale,&message,INK,13.*scale,false,pw-pad*2.);
+    }
+    if menu.page==Page::CharacterRename {
+        c.text(x+pad,y+pad+38.*scale,&menu.characters.rename_status,INK,14.*scale,false,pw-pad*2.);
+        c.text(x+pad,y+pad+60.*scale,"Select New name and type to replace it. Enter: finish. Apply: confirm.",INK,14.*scale,false,pw-pad*2.);
+    }
+    if menu.page==Page::CharacterRenameConfirm {
+        let old=menu.characters.expected.as_ref().map(|r|r.name.as_str()).unwrap_or("");
+        c.text(x+pad,y+pad+40.*scale,&format!("{} -> {}. Backup saved before applying.",old,menu.characters.proposed),INK,13.*scale,false,pw-pad*2.);
+    }
+    if menu.page==Page::Laws {
+        c.text(x+pad,y+pad+38.*scale,&menu.law_status,INK,14.*scale,false,pw-pad*2.);
+        c.text(x+pad,y+pad+60.*scale,"Bonus JP stays active. Existing cards remain. Applies to both sides.",INK,14.*scale,false,pw-pad*2.);
+    }
+    if menu.page==Page::ShopStock {
+        c.text(x+pad,y+pad+38.*scale,&menu.shop_status,INK,14.*scale,false,pw-pad*2.);
+        c.text(x+pad,y+pad+60.*scale,"Special unlocks follow game rules. Re-enter the shop after changing.",INK,14.*scale,false,pw-pad*2.);
+    }
+    if menu.page==Page::Characters {
+        c.text(x+pad,y+pad+38.*scale,&menu.characters.status,INK,14.*scale,false,pw-pad*2.);
+        c.text(x+pad,y+pad+60.*scale,"Left/Right: select member. Rename is available for regular members.",INK,14.*scale,false,pw-pad*2.);
+    }
+    if menu.page==Page::GilEditor {
+        c.text(x+pad,y+pad+38.*scale,&menu.gil.status,INK,14.*scale,false,pw-pad*2.);
+        c.text(x+pad,y+pad+60.*scale,"Left/Right: adjust. Mouse: left + / right -",INK,14.*scale,false,pw-pad*2.);
+    }
+    if matches!(menu.page,Page::GilConfirm|Page::GilUndoConfirm) {
+        let message=if menu.page==Page::GilConfirm {format!("{} -> {} Gil. Recovery state saved first.",menu.gil.current,menu.gil.proposed)}
+            else {"Return to the full game state before the last edit.".into()};
+        c.text(x+pad,y+pad+40.*scale,&message,INK,13.*scale,false,pw-pad*2.);
     }
     if matches!(
         menu.page,
@@ -286,7 +352,7 @@ pub(super) fn draw(
             if sel { [24, 15, 9] } else { [237, 219, 169] },
             if sel { GOLD } else { BRASS },
         );
-        let fg = if sel { GOLD } else { INK };
+        let fg = if sel { [255,251,238] } else { INK };
         let ty = yy + (rh - fs) / 2.;
         let tx = xx + 18. * scale;
 
@@ -497,7 +563,7 @@ pub(super) fn draw(
             xx + 20. * scale,
             yy + 10. * scale,
             "BACK",
-            if sel { GOLD } else { INK },
+            if sel { [255,251,238] } else { INK },
             fs,
             true,
             bw - 30. * scale,

@@ -178,7 +178,11 @@ impl Scene {
                 let role=if state.service_layout {Role::ServiceMenu}else{match panel.kind {
                     PanelKind::Stats=>Role::Stats,PanelKind::Notice=>Role::Notice,_=>Role::ActionMenu,
                 }};
-                let anchor=if panel.kind==PanelKind::Notice {Anchor::Modal}
+                let anchor=if panel.kind==PanelKind::Notice {
+                    // Pub confirmations share the mission content's native
+                    // canvas, rather than centering the small Notice itself.
+                    if state.service_layout && state.service_list {Anchor::Center}else{Anchor::Modal}
+                }
                     else if state.service_layout {Anchor::Corner{right:false,bottom:true}}
                     else if state.split_speech {Anchor::Center}
                     else{Anchor::Corner{right:if panel.kind==PanelKind::Stats {state.stats_target.map_or(bounds[0]+bounds[2]>=240,|_|state.stats_right)}else{state.town_layout || bounds[0]+bounds[2]>=240},bottom:bounds[1]+bounds[3]>=160}};
@@ -295,4 +299,14 @@ impl Scene {
         assert_eq!(n.role,Role::ServiceMenu);
         assert_eq!(n.anchor,Anchor::Corner{right:false,bottom:true});
     }
+}
+
+#[cfg(test)]mod pub_confirmation_anchor_tests{
+ use super::*;
+ #[test]fn pub_confirmation_anchor_shares_mission_canvas_without_moving_battle_modals(){
+  let mut s=DialogueState::default();s.separate=true;s.extra.kind=PanelKind::Notice;s.extra.bounds=Some([16,16,224,64]);s.extra.pixels=vec![d::UiPixel::opaque(1);480*160];
+  assert_eq!(Scene::capture(&s).nodes[1].unwrap().anchor,Anchor::Modal);
+  s.service_layout=true;s.service_list=true;assert_eq!(Scene::capture(&s).nodes[1].unwrap().anchor,Anchor::Center);
+  s.service_layout=false;s.service_list=false;s.action_layout=true;assert_eq!(Scene::capture(&s).nodes[1].unwrap().anchor,Anchor::Modal);
+ }
 }

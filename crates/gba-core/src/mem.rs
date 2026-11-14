@@ -236,6 +236,11 @@ pub struct MemMap {
     pub(crate) zoom_scratch: Vec<u16>,
     pub ffta_dialogue: crate::ffta_dialogue::DialogueState,
     pub ffta_debug: crate::ffta_debug::State,
+    /// Host preferences; reward amounts themselves remain in guest snapshots.
+    pub ffta_names:crate::ffta_names::NameBank,
+    pub ffta_rewards: crate::ffta_rewards::State,
+    pub ffta_shop_stock:crate::ffta_shop_stock::State,
+    pub ffta_laws:crate::ffta_laws::State,
     /// Affine BG reference-point accumulators (bg2x, bg2y, bg3x, bg3y),
     /// 19.8 fixed point. Latched from BG2X.. at frame start and whenever
     /// the game writes them; stepped by PB/PD each scanline.
@@ -331,6 +336,10 @@ impl MemMap {
             None
         };
         MemMap {
+            ffta_names:Default::default(),
+            ffta_rewards: crate::ffta_rewards::State::from_env(&rom),
+            ffta_shop_stock:crate::ffta_shop_stock::State::new(&rom),
+            ffta_laws:crate::ffta_laws::State::new(&rom),
             ffta_bg_edge: crate::ppu::FftaBgEdge::for_rom(&rom),
             ffta_sprites: crate::ffta_sprites::SpriteState::new(&rom),
             ffta_movement: crate::ffta_movement::MovementState::new(&rom),
@@ -1375,6 +1384,7 @@ impl MemMap {
 
 impl Bus for MemMap {
     fn read8(&mut self, addr: u32) -> u8 {
+        if let Some(v)=self.ffta_names.read(addr){return v;}
         match addr >> 24 {
             0x00 => {
                 if addr < 0x4000 {
@@ -1476,6 +1486,7 @@ impl Bus for MemMap {
     }
 
     fn read16(&mut self, addr: u32) -> u16 {
+        if let (Some(a),Some(b))=(self.ffta_names.read(addr),self.ffta_names.read(addr.wrapping_add(1))){return u16::from_le_bytes([a,b]);}
         match addr >> 24 {
             0x00 => {
                 if addr < 0x4000 {
@@ -1547,6 +1558,7 @@ impl Bus for MemMap {
     }
 
     fn read32(&mut self, addr: u32) -> u32 {
+        if let (Some(a),Some(b),Some(c),Some(d))=(self.ffta_names.read(addr),self.ffta_names.read(addr.wrapping_add(1)),self.ffta_names.read(addr.wrapping_add(2)),self.ffta_names.read(addr.wrapping_add(3))){return u32::from_le_bytes([a,b,c,d]);}
         match addr >> 24 {
             0x00 => {
                 if addr < 0x4000 {
@@ -1618,6 +1630,11 @@ impl Bus for MemMap {
     }
 
     fn write16(&mut self, addr: u32, value: u16) {
+        if (0x02000156..0x02001940).contains(&addr) && (addr-0x02000156)%0x108==0
+            && crate::ffta_rewards::trace_enabled() {
+            let o=(addr&0x3ffff)as usize;let old=u16::from_le_bytes([self.ewram[o],self.ewram[o+1]]);
+            if old!=value {eprintln!("FFTA_JP_TOTAL frame={} unit={} before={} after={}",self.frames,(addr-0x02000156)/0x108,old,value);}
+        }
         if let Some(log) = self.ffta_diagnostics.as_mut() {
             log.write(self.frames, addr, 2, value as u32);
         }

@@ -5,19 +5,28 @@ use screen::ui_layer::Layout;
 use std::time::Instant;
 const SECONDS:f64=0.15;
 const DIALOGUE_EXIT_SECONDS:f64=0.22;
-// The portrait producer slides OBJ tile 0x240 before/after the text window.
-// Keep the last complete host canvas instead of caching those partial faces.
+// The portrait producer slides a multipart image before/after the text window.
+// Tile 0x240 starts at x=16 for the recorded Bangaa, while its side pieces
+// start at x=0. Test the complete image's left edge, not one piece's origin.
+// Keep the last complete host canvas instead of caching partial faces.
 fn action_portrait_settled(mem:&gba_core::MemMap)->bool {
     let portrait=|a:[u16;3]|a[0]&0x2000!=0 && a[0]&0x300!=0x200
-        && a[2]&0xc00<=0x400 && a[2]&1023==0x240;
-    let host=mem.ffta_sprites.active.as_deref().unwrap_or(&[]);
-    if host.iter().any(|s|portrait(s.attrs)) {
-        return host.iter().any(|s|portrait(s.attrs) && s.x==0);
+        && a[0]>>14!=3 && a[2]&0xc00<=0x400
+        && (0x240..0x400).contains(&(a[2]&1023));
+    fn settled(pieces:impl Iterator<Item=([u16;3],i32)>)->bool {
+        let (primary,left)=pieces.fold((false,i32::MAX),|(primary,left),(a,x)|
+            (primary || a[2]&1023==0x240,left.min(x)));
+        primary && left==0
     }
-    mem.oam.chunks_exact(8).any(|o| {
+    let host=mem.ffta_sprites.active.as_deref().unwrap_or(&[]);
+    if host.iter().any(|s|portrait(s.attrs) && s.attrs[2]&1023==0x240) {
+        return settled(host.iter().filter(|s|portrait(s.attrs)).map(|s|(s.attrs,s.x)));
+    }
+    settled(mem.oam.chunks_exact(8).filter_map(|o| {
         let a=std::array::from_fn(|i|u16::from_le_bytes([o[i*2],o[i*2+1]]));
-        portrait(a) && a[1]&511==0
-    })
+        let x=(a[1]&511)as i32;
+        portrait(a).then_some((a,if x>=256{x-512}else{x}))
+    }))
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Default)]
 enum Mode {#[default] Waiting,Entering,Open,Exiting}
@@ -265,6 +274,36 @@ impl Motion {
         p.next_character=Some((1,2));p.sync(1.,Some(n),&full,Phase::Open);
         p.next_character=Some((2,2));p.sync(1.2,Some(n),&full,Phase::Open);
         assert_eq!(p.level(1.2),1.);
+    }
+    #[test]fn bangaa_forecast_uses_complete_portrait_edge_in_host_and_oam(){
+        use gba_core::ffta_sprites::HostSprite;
+        // Exact five portrait objects from the supplied State 9. Tile 0x240
+        // is 16 pixels inside the image, so it never reaches x=0 when open.
+        let recorded=[[0xa058u16,0xd010,0x0640],[0xa058,0x9000,0x0680],
+            [0xa078,0x9000,0x0690],[0x2060,0x5030,0x06a0],[0x2070,0x1030,0x06a8]];
+        for host in [false,true] {for shift in [-32,-16,0,16,32] {
+            let mut mem=gba_core::MemMap::new(vec![]);
+            for o in mem.oam.chunks_exact_mut(8){o[..2].copy_from_slice(&0x200u16.to_le_bytes());}
+            let mut sprites=Vec::new();
+            for (slot,mut a) in recorded.into_iter().enumerate() {
+                let x=(a[1]&511)as i32+shift;
+                a[1]=(a[1]&!511)|((x&511)as u16);
+                for (i,value) in a.iter().enumerate(){mem.oam[slot*8+i*2..slot*8+i*2+2].copy_from_slice(&value.to_le_bytes());}
+                sprites.push(HostSprite{x,y:(a[0]&255)as i32,attrs:a,slot,replaces:true,..Default::default()});
+            }
+            if host {mem.ffta_sprites.active=Some(sprites);}
+            assert_eq!(action_portrait_settled(&mem),shift==0,"host={host} shift={shift}");
+        }}
+    }
+    #[test]fn moving_host_portrait_cannot_borrow_a_settled_stale_oam_piece(){
+        use gba_core::ffta_sprites::HostSprite;
+        let mut mem=gba_core::MemMap::new(vec![]);
+        for o in mem.oam.chunks_exact_mut(8){o[..2].copy_from_slice(&0x200u16.to_le_bytes());}
+        for (i,a) in [0xa058u16,0xd000,0x0640].into_iter().enumerate(){mem.oam[i*2..i*2+2].copy_from_slice(&a.to_le_bytes());}
+        mem.ffta_sprites.active=Some(vec![HostSprite{x:-16,y:88,attrs:[0xa058,0xd1f0,0x0640],..Default::default()}]);
+        assert!(!action_portrait_settled(&mem));
+        mem.ffta_sprites.active=None;
+        assert!(action_portrait_settled(&mem));
     }
     #[test]fn action_widget_does_not_expose_atlas_pixels_outside_its_frame(){
         let mut p=Panel::default();p.sync(0.,Some(node(true)),&image(),Phase::Open);

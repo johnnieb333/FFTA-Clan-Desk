@@ -13,6 +13,18 @@ mod ui_inspect;
 mod ff_audio;
 mod packfile;
 mod autosave;
+mod manual_states;
+mod timed_states;
+mod gil_editor;
+mod item_editor;
+mod character_editor;
+mod roster_sprites;
+mod job_abilities;
+mod character_levels;
+mod character_clone;
+mod reward_settings;
+mod shop_settings;
+mod law_settings;
 mod play;
 mod rom_switch;
 mod save_path;
@@ -2446,6 +2458,13 @@ fn run_frame_native(
         }
         let key = m.cpu.regs[15] | m.cpu.thumb() as u32;
         m.ffta_log_sprite_entry(key);
+        // Reward hooks are return addresses immediately after original BLs.
+        // Execute their first instruction through the interpreter so the hook
+        // runs exactly once in both native play and interpreter-only runners.
+        if m.bus.ffta_rewards.interprets(key) || m.bus.ffta_shop_stock.interprets(key) || m.bus.ffta_laws.interprets(key) {
+            m.step();
+            continue;
+        }
         if m.bus.ffta_battle_mouse.interprets(m.cpu.regs[15]) || m.ffta_sprite_interpret(m.cpu.regs[15]) {
             m.step();
             continue;
