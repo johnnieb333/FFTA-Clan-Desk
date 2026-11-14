@@ -5,6 +5,28 @@ A Windows beta of **FFTARecomp** with an integrated clan editor, a new Clan Desk
 **Independently maintained by [johnnieb333](https://github.com/johnnieb333).**
 Forked from [Jorge262007/FFTARecomp](https://github.com/Jorge262007/FFTARecomp), built on [JRickey/gba-recomp](https://github.com/JRickey/gba-recomp). Original authors, licences and third-party notices are retained.
 
+## Screenshots
+
+### Character roster
+Browse clan members with character sprites, job and level details, and quick access to editing tools.
+<img width="854" height="512" alt="ChatGPT Image Nov 14, 2026, 05_39_50 PM" src="https://github.com/user-attachments/assets/778fd8c0-108d-4ca2-81cf-ddaa85bdcc08" />
+
+### Level & Stats
+Preview stat and level changes before applying them. Choose Game-possible limits or Unrestricted editing, with Undo available.
+<img width="854" height="512" alt="ChatGPT Image Nov 14, 2026, 05_40_39 PM" src="https://github.com/user-attachments/assets/858f50d8-e8f1-4e26-95e4-98e6f3b5f20f" />
+
+### Jobs & Abilities
+Change jobs, edit ability AP, or master one ability, the selected job, or every job available to the character’s race.
+<img width="854" height="512" alt="ChatGPT Image Nov 14, 2026, 05_42_14 PM" src="https://github.com/user-attachments/assets/eafadde7-bb84-4c2d-b382-9882eba56a76" />
+
+### Inventory editor
+Search and filter items, adjust quantities, or add unowned items. Equipped quantities are protected.
+<img width="854" height="512" alt="ChatGPT Image Nov 14, 2026, 05_43_03 PM" src="https://github.com/user-attachments/assets/afc86d00-7106-45f1-9c59-fe0c1f54b04b" />
+
+### Saves & Autosaves
+Manage 30 manual states and 10 rotating autosaves, with gameplay previews, an adjustable autosave timer, and Undo Load.
+<img width="854" height="512" alt="ChatGPT Image Nov 14, 2026, 05_43_26 PM" src="https://github.com/user-attachments/assets/e3fd5dfc-431a-4867-9686-23aca7ff4630" />
+
 ## Windows beta scope
 
 The intended first release is **v0.1.0-beta** for **Windows x86_64**. The editor and new UI have been tested with the European FFTA ROM. The beta launcher verifies that ROM before starting. Other platforms and regions are not claimed as tested for these additions.
