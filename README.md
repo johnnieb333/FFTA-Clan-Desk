@@ -1,5 +1,7 @@
 # FFTA Clan Desk
+
 Come join Discord https://discord.gg/wGYVw9rTc6
+
 A Windows beta of **FFTARecomp** with an integrated clan editor, a new Clan Desk menu, manual save states and a browsable timed-autosave history.
 
 **Independently maintained by [johnnieb333](https://github.com/johnnieb333).**
