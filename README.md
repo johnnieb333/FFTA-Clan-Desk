@@ -1,5 +1,7 @@
 # FFTA Clan Desk
 
+Return to Ivalice. Build the clan you always wanted. FFTA Clan Desk brings a full editor directly into the game—shape your characters, master jobs and abilities, and stock your inventory without hours of grinding. Spend your next playthrough experimenting with builds and enjoying the battles, with previews and Undo built in.
+
 Come join Discord https://discord.gg/wGYVw9rTc6
 
 A Windows beta of **FFTARecomp** with an integrated clan editor, a new Clan Desk menu, manual save states and a browsable timed-autosave history.
